@@ -1,28 +1,28 @@
-// RetryMissionPause.cpp - GTA San Andreas 1.0 US (including "compact"/Hoodlum exe)
-// ALTERNATIVE VERSION of RetryMission: instead of a warning with a countdown, the game PAUSES (the game's
-// own pause screen) and, instead of the options (Continue, Map, ...), the following appears in the middle:
+// RetryMissionPause.cpp - GTA San Andreas 1.0 US (inclui exe "compact"/Hoodlum)
+// VERSAO ALTERNATIVA do RetryMission: em vez de um aviso com contador, o jogo PAUSA (tela de pausa do
+// proprio jogo) e, no lugar das opcoes (Continuar, Mapa, ...), aparece no meio da tela:
 //
 //        Retry?
 //        Yes
 //        No
 //
-// "Yes" and "No" are selectable options, like in the pause menu:
-//   keyboard: Up/Down arrows + Enter      mouse: hover the cursor and click
-//   controller (XInput or GInput): D-pad or left analog stick Up/Down + Cross (A)
-//   Yes = unpauses and teleports to the marker (restoring everything); No (or Esc) = unpauses and cancels.
-// Navigation also works with the LEFT analog stick (up/down). There are no shortcuts: just select and confirm.
-// ORIGINAL game menu sounds: navigate (arrows/d-pad/mouse), confirm (Yes), and back (No, Esc, controller Y).
-// The mouse cursor and icon are the ORIGINAL game ones (texture from the menu itself) and behave like GInput:
-// they disappear when using the controller or keyboard arrows and return when you move the mouse.
-// What you press in the Retry menu does not leak into gameplay (no punching when clicking to confirm).
-// There is no countdown: the player decides when to retry. The texts are configurable in the .ini.
+// "Yes" e "No" sao opcoes selecionaveis, como no menu de pausa:
+//   teclado: setas Cima/Baixo + Enter      mouse: passar o cursor e clicar
+//   controle (XInput ou GInput): direcional ou analogico esquerdo Cima/Baixo + Cross (A)
+//   Yes = despausa e teleporta para o marcador (restaurando tudo); No (ou Esc) = despausa e cancela.
+// Navegacao tambem com o analogico ESQUERDO (cima/baixo). Nao ha atalhos: so escolher e confirmar.
+// Sons do menu ORIGINAL do jogo: navegar (setas/direcional/mouse), confirmar (Yes) e voltar (No, Esc, Y do controle).
+// O cursor do mouse e o icone ORIGINAL do jogo (textura do proprio menu) e se comporta como no GInput:
+// some quando voce usa o controle ou as setas do teclado e volta quando voce mexe no mouse.
+// O que voce aperta no menu de Retry nao vaza para a gameplay (nada de soco ao clicar para confirmar).
+// Nao ha contador: o jogador decide quando quiser. Os textos sao configuraveis no .ini.
 //
-// When the player steps on the marker and the mission starts, it saves the position, weapons (with exact ammo),
-// health, armor, money, wanted level, time, and weather at that moment.
+// Quando o jogador pisa no marcador e a missao comeca, guarda a posicao, as armas (com a municao
+// exata), a vida, o colete, o dinheiro, o nivel de procurado, o horario e o clima desse momento.
 //
-// Configuration in RetryMissionPause.ini (reloaded on save).
+// Configuracao em RetryMissionPause.ini (recarregado ao salvar).
 //
-// Compile as Win32 (x86). The output must be named RetryMissionPause.asi
+// Compilar como Win32 (x86). A saida deve se chamar RetryMissionPause.asi
 #include <windows.h>
 #include <cstdio>
 #include <cstdarg>
@@ -32,109 +32,116 @@
 #include <cstring>
 #include <cmath>
 
-// ======================= Addresses (GTA SA 1.0 US) =======================
+// ======================= Enderecos (GTA SA 1.0 US) =======================
 static const uintptr_t VERSION_ADDR = 0x82457C;
 static const uint32_t  VERSION_OK   = 0x94BF;
 
-// Player
-static const uintptr_t PLAYERS_BASE   = 0xB7CD98;  // CWorld::Players[], stride 0x190, ped at offset 0
+// Jogador
+static const uintptr_t PLAYERS_BASE   = 0xB7CD98;  // CWorld::Players[], stride 0x190, ped no offset 0
 static const uintptr_t PLAYER_FOCUS   = 0xB7CD74;  // CWorld::PlayerInFocus (byte)
 static const uintptr_t PLAYER_STRIDE  = 0x190;
-static const uintptr_t PED_STATE_OFF  = 0x530;     // CPed::m_ePedState (0x36 dying, 0x37 dead, 0x3F arrested)
+static const uintptr_t PED_STATE_OFF  = 0x530;     // CPed::m_ePedState (0x36 morrendo, 0x37 morto, 0x3F preso)
 static const uintptr_t ENTITY_AREA_OFF = 0x2F;     // CEntity::m_nAreaCode
 
-// Game state
-static const uintptr_t ADDR_GAME_STATE   = 0x96A8B0;  // CGameLogic::GameState (0 = playing; 1 = died; 2 = arrested; ...)
-static const uintptr_t ADDR_TIMER_MS     = 0xB7CB84;  // CTimer::m_snTimeInMilliseconds (for when the game pauses)
-static const uintptr_t ADDR_CURR_AREA    = 0xB72914;  // CGame::currArea (current interior)
+// Estado do jogo
+static const uintptr_t ADDR_GAME_STATE   = 0x96A8B0;  // CGameLogic::GameState (0 = jogando; 1 = morreu; 2 = preso; ...)
+static const uintptr_t ADDR_TIMER_MS     = 0xB7CB84;  // CTimer::m_snTimeInMilliseconds (para quando o jogo pausa)
+static const uintptr_t ADDR_CURR_AREA    = 0xB72914;  // CGame::currArea (interior atual)
 static const uintptr_t ADDR_CUTSCENE_A   = 0xB5F851;  // CCutsceneMgr::ms_running
 static const uintptr_t ADDR_CUTSCENE_B   = 0xB5F852;  // CCutsceneMgr::ms_cutsceneProcessing
 // CTheScripts::IsPlayerOnAMission: *(int*)(0xA49960 + *(uint32*)0xA476AC) == 1
 static const uintptr_t ADDR_MISSION_OFF  = 0xA476AC;
 static const uintptr_t ADDR_SCRIPT_SPACE = 0xA49960;
 
-// Clock and weather
+// Relogio e clima
 static const uintptr_t ADDR_CLOCK_SECONDS = 0xB70150;  // CClock::ms_nGameClockSeconds (short)
 static const uintptr_t ADDR_CLOCK_MINUTES = 0xB70152;  // CClock::ms_nGameClockMinutes (byte)
 static const uintptr_t ADDR_CLOCK_HOURS   = 0xB70153;  // CClock::ms_nGameClockHours (byte)
 static const uintptr_t FN_SET_GAME_CLOCK  = 0x52D150;  // CClock::SetGameClock(hours, minutes, dayOfWeek)
 static const uintptr_t ADDR_WEATHER_INTERP = 0xC8130C; // CWeather::InterpolationValue (float)
-static const uintptr_t ADDR_WEATHER_FORCED = 0xC81318; // CWeather::ForcedWeatherType (short, -1 = none)
+static const uintptr_t ADDR_WEATHER_FORCED = 0xC81318; // CWeather::ForcedWeatherType (short, -1 = nenhum)
 static const uintptr_t ADDR_WEATHER_NEW    = 0xC8131C; // CWeather::NewWeatherType (short)
 static const uintptr_t ADDR_WEATHER_OLD    = 0xC81320; // CWeather::OldWeatherType (short)
 
-// Money: CPlayerInfo::m_nMoney (+0xB8, = 0xB7CE50 for player 0) and m_nDisplayMoney (+0xBC, displayed on screen)
+// Dinheiro: CPlayerInfo::m_nMoney (+0xB8, = 0xB7CE50 para o jogador 0) e m_nDisplayMoney (+0xBC, mostrado na tela)
 static const uintptr_t PLAYER_MONEY_OFF   = 0xB8;
 static const uintptr_t PLAYER_DISPLAY_OFF = 0xBC;
 
-// Wanted: CWanted* = *(Players + 4 + idx*0x190) (same calculation as FindPlayerWanted, 0x56E230)
-static const uintptr_t WANTED_CHAOS_OFF = 0x00;    // int: "chaos" level
-static const uintptr_t WANTED_LEVEL_OFF = 0x2C;    // int: stars (0-6)
-static const uintptr_t FN_WANTED_UPDATE = 0x561C90; // CWanted::UpdateWantedLevel (thiscall, no arguments)
+// Procurado: CWanted* = *(Players + 4 + idx*0x190) (a mesma conta de FindPlayerWanted, 0x56E230)
+static const uintptr_t WANTED_CHAOS_OFF = 0x00;    // int: nivel de "caos"
+static const uintptr_t WANTED_LEVEL_OFF = 0x2C;    // int: estrelas (0-6)
+static const uintptr_t FN_WANTED_UPDATE = 0x561C90; // CWanted::UpdateWantedLevel (thiscall, sem argumentos)
 
 // CPed
 static const uintptr_t PED_HEALTH_OFF   = 0x540;   // float
 static const uintptr_t PED_ARMOUR_OFF   = 0x548;   // float
-static const uintptr_t PED_WEAPONS_OFF  = 0x5A0;   // CWeapon[13], 0x1C each: type +0, state +4, clip ammo +8, total ammo +0xC
+// Roupas, corte de cabelo e tatuagens (CPedClothesDesc) e stats/skills
+static const uintptr_t PED_PLAYERDATA_OFF  = 0x480;    // CPlayerPed::m_pPlayerData
+static const uintptr_t PLAYERDATA_CLOTHES_OFF = 0x4;   // CPlayerPedData::m_pPedClothesDesc
+static const size_t    CLOTHES_DESC_SIZE   = 0x78;     // chaves de modelo[10] + de textura[18] (roupa, cabelo, tatuagens) + gordura + musculo
+static const uintptr_t FN_REBUILD_PLAYER   = 0x5A82C0; // CClothes::RebuildPlayer(CPlayerPed*, bool) (cdecl)
+static const uintptr_t STATS_REGION_ADDR   = 0xB78F68; // CStats: inteiros (ids 82..) e floats (ids 0..81), contiguos
+static const size_t    STATS_REGION_SIZE   = 0x560;
+static const uintptr_t PED_WEAPONS_OFF  = 0x5A0;   // CWeapon[13], 0x1C cada: tipo +0, estado +4, municao no pente +8, municao total +0xC
 static const uintptr_t PED_ACTIVE_SLOT  = 0x718;   // byte
 static const int       WEAPON_SLOTS     = 13;
 static const uintptr_t FN_PED_CLEAR_WEAPONS = 0x5E6320;  // CPed::ClearWeapons (thiscall)
 static const uintptr_t FN_PED_GIVE_WEAPON   = 0x5E6080;  // CPed::GiveWeapon(type, ammo, bool) (thiscall)
 static const uintptr_t FN_PED_SET_CUR_WEAPON = 0x5E61F0; // CPed::SetCurrentWeapon(slot) (thiscall)
 
-// Pause menu (FrontEndMenuManager at 0xBA6748)
+// Menu de pausa (FrontEndMenuManager em 0xBA6748)
 static const uintptr_t MENU_OBJ             = 0xBA6748;
-static const uintptr_t ADDR_MENU_ACTIVE     = 0xBA67A4;  // m_bMenuActive (= object + 0x5C)
-static const uintptr_t ADDR_MENU_ACTIVATE   = 0xBA677B;  // m_bActivateMenuNextFrame (= object + 0x33)
-static const uintptr_t MENU_SHUTDOWN_OFF    = 0x32;      // "request to close the menu"
+static const uintptr_t ADDR_MENU_ACTIVE     = 0xBA67A4;  // m_bMenuActive (= objeto + 0x5C)
+static const uintptr_t ADDR_MENU_ACTIVATE   = 0xBA677B;  // m_bActivateMenuNextFrame (= objeto + 0x33)
+static const uintptr_t MENU_SHUTDOWN_OFF    = 0x32;      // "pedido de fechar o menu"
 static const uintptr_t MENU_ACTIVE_OFF      = 0x5C;
 static const uintptr_t MENU_SCREEN_BYTE_OFF = 0x5B;
-static const uintptr_t FN_REQUEST_PAUSE     = 0x53BC60;  // requests opening the pause menu on the next frame
-static const uintptr_t FN_MENU_PROCESS_CALL = 0x53BF44;  // call CMenuManager::Process (in CGame::Process)
+static const uintptr_t FN_REQUEST_PAUSE     = 0x53BC60;  // pede para abrir o menu de pausa no proximo frame
+static const uintptr_t FN_MENU_PROCESS_CALL = 0x53BF44;  // call CMenuManager::Process (em CGame::Process)
 static const uintptr_t FN_MENU_PROCESS      = 0x57B440;
-static const uintptr_t FN_MENU_CHECK_CLOSE  = 0x576B70;  // handles opening/closing the menu
-static const uintptr_t FN_MENU_STREAMING    = 0x573CF0;  // thiscall(uint8) - part of Process that is not input
+static const uintptr_t FN_MENU_CHECK_CLOSE  = 0x576B70;  // trata abrir/fechar o menu
+static const uintptr_t FN_MENU_STREAMING    = 0x573CF0;  // thiscall(uint8) - parte do Process que nao e input
 static const uintptr_t FN_MENU_AUDIO_A      = 0x730740;  // cdecl(1)
 static const uintptr_t FN_MENU_AUDIO_B      = 0x7305E0;  // cdecl(1)
 static const uintptr_t FN_FONT_RENDER_BUF   = 0x71A210;  // CFont::RenderFontBuffer
 static const uintptr_t FN_DRAW_RECT         = 0x727B60;  // CSprite2d::DrawRect(CRect*, CRGBA*)
 static const uintptr_t FN_FONT_SET_DROPCOLOR = 0x719510; // CFont::SetDropColor(CRGBA)
 
-// Menu mouse cursor (sprite loaded by the game itself) and input
-static const uintptr_t MENU_MOUSE_ON_OFF   = 0xB8;      // 1 = menu draws the cursor / uses the mouse
-static const uintptr_t MENU_MOUSE_X_OFF    = 0xBC;      // cursor position (game screen pixels)
+// Cursor do mouse do menu (sprite carregado do proprio jogo) e entrada
+static const uintptr_t MENU_MOUSE_ON_OFF   = 0xB8;      // 1 = o menu desenha o cursor / usa o mouse
+static const uintptr_t MENU_MOUSE_X_OFF    = 0xBC;      // posicao do cursor (pixels da tela do jogo)
 static const uintptr_t MENU_MOUSE_Y_OFF    = 0xC0;
-static const uintptr_t MENU_SPRITE_OFF     = 0x154;     // CSprite2d "mouse" (mouse + mousea textures)
+static const uintptr_t MENU_SPRITE_OFF     = 0x154;     // CSprite2d "mouse" (textura mouse + mascara mousea)
 static const uintptr_t FN_SPRITE_DRAW      = 0x728350;  // CSprite2d::Draw(CRect&, CRGBA&) (thiscall)
-static const uintptr_t FN_STRETCH_X        = 0x5733E0;  // CMenuManager::StretchX(float) (thiscall, returns st0)
+static const uintptr_t FN_STRETCH_X        = 0x5733E0;  // CMenuManager::StretchX(float) (thiscall, retorna em st0)
 static const uintptr_t FN_STRETCH_Y        = 0x573410;  // CMenuManager::StretchY(float)
-static const uintptr_t FN_UPDATE_PADS_CALL = 0x53BEE6;  // call CPad::UpdatePads in CGame::Process
+static const uintptr_t FN_UPDATE_PADS_CALL = 0x53BEE6;  // call CPad::UpdatePads em CGame::Process
 static const uintptr_t FN_UPDATE_PADS      = 0x541DD0;
 
-// Menu sound effects (CAudioEngine::ReportFrontendAudioEvent) - same IDs used by the pause menu
+// Efeitos sonoros do menu (CAudioEngine::ReportFrontendAudioEvent) - os mesmos ids que o menu de pausa usa
 static const uintptr_t ADDR_AUDIO_ENGINE   = 0xB6BC90;
-static const uintptr_t FN_AUDIO_EVENT      = 0x506EA0;  // thiscall(engine, event, extraVolume, speed)
-static const int SND_CONFIRM  = 1;     // Cross / Enter (select)
-static const int SND_BACK     = 2;     // Triangle / Esc (back)
-static const int SND_NAVIGATE = 3;     // d-pad / arrows / mouse hover (change option)
+static const uintptr_t FN_AUDIO_EVENT      = 0x506EA0;  // thiscall(engine, evento, volumeExtra, velocidade)
+static const int SND_CONFIRM  = 1;     // Cross / Enter (selecionar)
+static const int SND_BACK     = 2;     // Triangulo / Esc (voltar)
+static const int SND_NAVIGATE = 3;     // direcional / setas / passar o mouse (mudar de opcao)
 
-// Wanted: official game function that sets the level (also clears the pending crime queue)
+// Procurado: funcao oficial do jogo que define o nivel (limpa tambem a fila de crimes pendentes)
 static const uintptr_t FN_WANTED_SET       = 0x562470;  // CWanted::SetWantedLevel(int) (thiscall)
-static const uintptr_t ADDR_WANTED_MAXLVL  = 0x8CDEE4;  // maximum wanted level currently allowed
-static const uintptr_t ADDR_WANTED_NEVER   = 0x969171;  // "never wanted" cheat (SetWantedLevel does nothing if enabled)
+static const uintptr_t ADDR_WANTED_MAXLVL  = 0x8CDEE4;  // nivel maximo de procurado permitido agora
+static const uintptr_t ADDR_WANTED_NEVER   = 0x969171;  // cheat "nunca procurado" (SetWantedLevel nao faz nada se ligado)
 
-// HUD item states (weight/display state). Each item: state, time, time2
+// Estados dos itens do HUD (peso/estado de exibicao). Cada item: estado, tempo, tempo2
 static const uintptr_t HUD_ITEM_BASES[4] = { 0xBAA404, 0xBAA414, 0xBAA424, 0xBAA434 };
-static const uintptr_t HUD_MONEY_BASE    = 0xBAA424;    // state (0 = hidden), time, time2
-static const uintptr_t ADDR_HUD_LAST_MONEY = 0xBAA430;  // last displayed money
+static const uintptr_t HUD_MONEY_BASE    = 0xBAA424;    // estado (0 = escondido), tempo, tempo2
+static const uintptr_t ADDR_HUD_LAST_MONEY = 0xBAA430;  // ultimo dinheiro exibido
 
-// Controller (CPad 0; GetPad uses stride 0x134; NewState is the first field)
+// Controle (CPad 0; GetPad usa stride 0x134; NewState e o primeiro campo)
 static const uintptr_t PAD0_ADDR = 0xB73458;
 
-// Game functions
-static const uintptr_t FN_GAMELOGIC_UPDATE_CALL = 0x53C11D;  // call CGameLogic::Update (in CGame::Process)
+// Funcoes do jogo
+static const uintptr_t FN_GAMELOGIC_UPDATE_CALL = 0x53C11D;  // call CGameLogic::Update (em CGame::Process)
 static const uintptr_t FN_GAMELOGIC_UPDATE      = 0x442AD0;
-static const uintptr_t FN_HUD_DRAW              = 0x58D490;  // CHud::Draw (called in 3 places)
+static const uintptr_t FN_HUD_DRAW              = 0x58D490;  // CHud::Draw (chamado em 3 lugares)
 static const uintptr_t FN_ADD_BIG_MESSAGE       = 0x69F2B0;  // CMessages::AddBigMessage(text, time, style)
 static const uintptr_t FN_TEXT_GET              = 0x6A0050;  // CText::Get(const char* key) (thiscall)
 static const uintptr_t ADDR_THETEXT             = 0xC1B340;
@@ -151,14 +158,14 @@ static const uintptr_t FN_FONT_SET_EDGE    = 0x719590;
 static const uintptr_t FN_FONT_SET_PROP    = 0x7195B0;
 static const uintptr_t FN_FONT_SET_BG      = 0x7195C0;
 static const uintptr_t FN_FONT_SET_JUSTIFY = 0x719600;
-static const uintptr_t FN_FONT_SET_ORIENT  = 0x719610;  // 0 = center, 1 = left, 2 = right
+static const uintptr_t FN_FONT_SET_ORIENT  = 0x719610;  // 0 = centro, 1 = esquerda, 2 = direita
 static const uintptr_t FN_FONT_PRINT       = 0x71A700;  // CFont::PrintString(float x, float y, char* text)
 
-// Screen
+// Tela
 static const int* const pScreenW = (const int*)0xC17044;  // RsGlobal.maximumWidth
 static const int* const pScreenH = (const int*)0xC17048;  // RsGlobal.maximumHeight
 
-// ======================= Types =======================
+// ======================= Tipos =======================
 typedef void (__cdecl *VoidFn_t)();
 typedef void (__cdecl *BigMsg_t)(const char*, uint32_t, uint32_t);
 typedef const char* (__thiscall *TextGet_t)(void*, const char*);
@@ -172,8 +179,8 @@ typedef void (__thiscall *WantedUpdate_t)(void*);
 typedef void (__thiscall *WantedSet_t)(void*, int);
 typedef void (__thiscall *AudioEvent_t)(void*, int, float, float);
 
-// ======================= Configuration =======================
-// offset = game CPad field (CControllerState); xmask = XInput button; xtrig = trigger (1 = L2, 2 = R2)
+// ======================= Configuracao =======================
+// offset = campo do CPad do jogo (CControllerState); xmask = botao do XInput; xtrig = gatilho (1 = L2, 2 = R2)
 struct PadButton { const char* name; const char* display; int offset; uint16_t xmask; int xtrig; };
 static const PadButton PAD_BUTTONS[] = {
     { "DPadUp",    "Dpad Up",    0x10, 0x0001, 0 }, { "DPadDown",  "Dpad Down",  0x12, 0x0002, 0 },
@@ -186,7 +193,7 @@ static const PadButton PAD_BUTTONS[] = {
 };
 
 static bool  g_enabled   = true;
-static int   g_vk        = 'R';        // 0 = disabled
+static int   g_vk        = 'R';        // 0 = desativado
 static char  g_keyName[32] = "R";
 static int   g_cancelVk  = 'N';
 static char  g_cancelKeyName[32] = "N";
@@ -195,25 +202,27 @@ static uint16_t g_cancelXMask = 0x0004;
 static int   g_cancelXTrig = 0;
 static char  g_cancelPadName[32] = "Dpad Left";
 static bool  g_cancelOnEsc = true;
-static int   g_backOffset = 0x1E;      // Triangle / controller Y
+static int   g_backOffset = 0x1E;      // Triangulo / Y do controle
 static uint16_t g_backXMask = 0x8000;
 static int   g_backXTrig = 0;
 static char  g_backPadName[32] = "Triangle";
-static int   g_padOffset = 0x16;       // -1 = disabled
-static uint16_t g_padXMask = 0x0008;   // XInput mask of the selected button
+static int   g_padOffset = 0x16;       // -1 = desativado
+static uint16_t g_padXMask = 0x0008;   // mascara do XInput do botao escolhido
 static int   g_padXTrig = 0;
 static int   g_padSource = 0;          // 0 = Auto, 1 = XInput, 2 = Game (CPad)
 static char  g_padName[32] = "Dpad Right";
 static char  g_message[256] = "Retry?";
-static char  g_padLabel[64] = "";     // if filled, replaces the button name in {PAD}
-static bool  g_restoreWeapons = true, g_restoreHealth = true, g_restoreArmour = true, g_restoreMoney = true, g_restoreWanted = true, g_restoreTimeWeather = true;
-static float g_msgY      = 47.0f;      // % of screen height (top position of the text)
+static char  g_padLabel[64] = "";     // se preenchido, substitui o nome do botao em {PAD}
+static bool  g_restoreWeapons = true, g_restoreHealth = true, g_restoreArmour = true, g_restoreMoney = true, g_restoreWanted = true, g_restoreTimeWeather = true, g_restoreClothes = true, g_restoreStats = true;
+static float g_promptDelaySec = 3.0f;   // segundos entre a falha da missao e o menu Retry?
+static int   g_sCodeSmall = 0x9A, g_sCodeCap = 0x8A;       // codigos do jogo para s e S com caron
+static float g_msgY      = 47.0f;      // % da altura da tela (posicao do topo do texto)
 static float g_msgOffX = 0.0f, g_msgOffY = 0.0f;   // pixels
 static uint32_t g_titleColor = 0xFFEEC8B8u;     // ABGR
-static uint32_t g_selColor   = 0xFFFFE0D2u;     // selected option
-static uint32_t g_normColor  = 0xFF9C7F6Eu;     // unselected option
+static uint32_t g_selColor   = 0xFFFFE0D2u;     // opcao selecionada
+static uint32_t g_normColor  = 0xFF9C7F6Eu;     // opcao nao selecionada
 static char     g_yesText[64] = "Yes";
-static char     g_noText[64] = "No";
+static char     g_noText[64]  = "No";
 static float    g_lineSpacing = 1.0f;
 static bool     g_ownCursor   = true;
 static bool     g_hideCursorWithPad = true;
@@ -223,8 +232,11 @@ static char     g_iniPath[MAX_PATH];
 static FILETIME g_lastWrite = {0, 0};
 static DWORD    g_lastCheck = 0;
 
+static bool g_logEnabled = false;      // EnableLog=1 no .ini liga o arquivo de log
+
 static void Log(const char* fmt, ...)
 {
+    if (!g_logEnabled) return;
     FILE* f = fopen("RetryMissionPause.log", "a");
     if (!f) return;
     va_list ap; va_start(ap, fmt);
@@ -258,7 +270,7 @@ static int ParseKey(const char* s)
         {"CTRL",VK_CONTROL},{"ALT",VK_MENU},{"CAPSLOCK",VK_CAPITAL},
     };
     for (auto& e : names) if (!strcmp(u, e.n)) return e.vk;
-    char* end = nullptr; long v = strtol(s, &end, 0);   // accepts 0x52 or 82
+    char* end = nullptr; long v = strtol(s, &end, 0);   // aceita 0x52 ou 82
     if (end != s && v > 0 && v < 256) return (int)v;
     return 0;
 }
@@ -269,7 +281,7 @@ static void ParsePad(const char* s, int& offset, uint16_t& xmask, int& xtrig, ch
     if (!s || !s[0] || !_stricmp(s, "none") || !_stricmp(s, "off")) return;
     for (auto& b : PAD_BUTTONS)
         if (!_stricmp(s, b.name)) { offset = b.offset; xmask = b.xmask; xtrig = b.xtrig; strncpy(display, b.display, dsize - 1); display[dsize - 1] = 0; return; }
-    Log("Unknown PadButton in ini: %s", s);
+    Log("PadButton desconhecido no ini: %s", s);
 }
 
 static uint32_t ReadColor(const char* key, const char* def)
@@ -284,8 +296,9 @@ static void LoadConfig()
 {
     char buf[256];
     g_enabled = GetPrivateProfileIntA("Retry", "Enabled", 1, g_iniPath) != 0;
+    g_logEnabled = GetPrivateProfileIntA("Retry", "EnableLog", 0, g_iniPath) != 0;
 
-    // There are no more shortcuts (R, N, left/right d-pad): just navigate and confirm in the menu.
+    // Nao ha mais atalhos (R, N, direcional esquerdo/direito): so navegar e confirmar no menu.
     g_vk = 0;            g_padOffset = -1;    g_padXMask = 0;        g_padXTrig = 0;
     g_cancelVk = 0;      g_cancelOffset = -1; g_cancelXMask = 0;     g_cancelXTrig = 0;
     g_cancelOnEsc = GetPrivateProfileIntA("Retry", "CancelOnEscape", 1, g_iniPath) != 0;
@@ -302,6 +315,12 @@ static void LoadConfig()
     g_padSource = !_stricmp(buf, "XInput") ? 1 : (!_stricmp(buf, "Game") ? 2 : 0);
     g_restoreMoney       = GetPrivateProfileIntA("Retry", "RestoreMoney", 1, g_iniPath) != 0;
     g_restoreWanted      = GetPrivateProfileIntA("Retry", "RestoreWanted", 1, g_iniPath) != 0;
+    g_promptDelaySec     = ReadFloat("PromptDelaySeconds", 3.0f); if (g_promptDelaySec < 0.0f) g_promptDelaySec = 0.0f;
+    g_restoreClothes     = GetPrivateProfileIntA("Retry", "RestoreClothes", 1, g_iniPath) != 0;
+    g_restoreStats       = GetPrivateProfileIntA("Retry", "RestoreStats", 1, g_iniPath) != 0;
+    { char b2[32];
+      GetPrivateProfileStringA("Retry", "SmallSCode", "0x9A", b2, sizeof(b2), g_iniPath);  g_sCodeSmall = (int)strtol(b2, nullptr, 0);
+      GetPrivateProfileStringA("Retry", "CapitalSCode", "0x8A", b2, sizeof(b2), g_iniPath); g_sCodeCap = (int)strtol(b2, nullptr, 0); }
     g_msgY     = ReadFloat("MessageY", 47.0f);
     g_msgOffX  = ReadFloat("MessageOffsetX", 0.0f);
     g_msgOffY  = ReadFloat("MessageOffsetY", 0.0f);
@@ -328,7 +347,7 @@ static void CheckReload()
     if (CompareFileTime(&fad.ftLastWriteTime, &g_lastWrite) != 0) { g_lastWrite = fad.ftLastWriteTime; LoadConfig(); }
 }
 
-// ======================= Game access =======================
+// ======================= Acesso ao jogo =======================
 static inline uint8_t* PlayerPed()
 {
     uint8_t focus = *(uint8_t*)PLAYER_FOCUS;
@@ -337,7 +356,7 @@ static inline uint8_t* PlayerPed()
 
 static bool PedPosition(uint8_t* ped, float out[3])
 {
-    uint8_t* matrix = *(uint8_t**)(ped + 0x14);          // CMatrix* (position at +0x30), otherwise placement at +0x4
+    uint8_t* matrix = *(uint8_t**)(ped + 0x14);          // CMatrix* (pos em +0x30), senao placement em +0x4
     const float* p = matrix ? (const float*)(matrix + 0x30) : (const float*)(ped + 0x4);
     out[0] = p[0]; out[1] = p[1]; out[2] = p[2];
     return true;
@@ -354,7 +373,7 @@ static bool IsCutscene()
     return *(uint8_t*)ADDR_CUTSCENE_A != 0 || *(uint8_t*)ADDR_CUTSCENE_B != 0;
 }
 
-// ---- XInput (loaded dynamically; if unavailable, only the game's pad is used) ----
+// ---- XInput (carregado dinamicamente; se nao existir, so usa o pad do jogo) ----
 struct XGamepad { uint16_t wButtons; uint8_t bLT, bRT; int16_t lx, ly, rx, ry; };
 struct XState   { DWORD packet; XGamepad pad; };
 typedef DWORD (WINAPI *XInputGetState_t)(DWORD, XState*);
@@ -401,7 +420,7 @@ static bool g_lastPadViaX = false;
 static DWORD g_lastKeyTick = 0;
 static const DWORD KEY_GRACE_MS = 600;
 
-// true if any keyboard key is currently held (ignores mouse and controller buttons reported as keys)
+// true se alguma tecla do teclado esta apertada (ignora mouse e botoes de controle reportados como tecla)
 static bool AnyKeyboardKeyDown()
 {
     for (int vk = 8; vk < 255; ++vk)
@@ -412,12 +431,12 @@ static bool AnyKeyboardKeyDown()
     return false;
 }
 
-// true while the selected button (and ONLY it) is held
+// true enquanto o botao escolhido (e SO ele) esta apertado
 static bool PadDown(int padOffset, uint16_t xmask, int xtrig)
 {
     if (padOffset < 0) return false;
 
-    // 1) direct XInput: unaffected by other buttons/keys mapped by the game
+    // 1) direto do XInput: nao sofre interferencia de outros botoes/teclas mapeados no jogo
     if (g_padSource != 2)
     {
         XGamepad xg;
@@ -429,15 +448,15 @@ static bool PadDown(int padOffset, uint16_t xmask, int xtrig)
             if (xtrig == 2) return xg.bRT > 100;
             return xmask && (xg.wButtons & xmask) != 0;
         }
-        if (g_padSource == 1) return false;     // XInput required and no controller available
+        if (g_padSource == 1) return false;     // XInput obrigatorio e nao ha controle
     }
     g_lastPadViaX = false;
 
-    // 2) through the game's pad (GInput injects the state here). Requires that no OTHER button be held,
-    //    to avoid accidental activation when another button/key changes the pad state.
-    // The game also translates keyboard keys into the pad state (e.g. the Y key), and the pad sees the key
-    // release one frame AFTER the keyboard. Therefore, the pad state only counts as "controller input" if no
-    // keyboard key is currently held or has been pressed less than KEY_GRACE_MS ago.
+    // 2) pelo pad do jogo (GInput injeta o estado aqui). Exige que nenhum OUTRO botao esteja apertado,
+    //    para nao disparar por engano quando outro botao/tecla mexe no estado do pad.
+    // O jogo tambem traduz teclas do teclado para o estado do pad (ex.: a tecla Y), e o pad enxerga a tecla
+    // soltar um frame DEPOIS do teclado. Por isso o estado do pad so vale como "controle" se nenhuma tecla do
+    // teclado estiver apertada nem tiver sido apertada ha menos de KEY_GRACE_MS.
     const DWORD tnow = GetTickCount();
     if (AnyKeyboardKeyDown()) g_lastKeyTick = tnow;
     if (*(int16_t*)(PAD0_ADDR + padOffset) == 0) return false;
@@ -445,7 +464,7 @@ static bool PadDown(int padOffset, uint16_t xmask, int xtrig)
     for (const PadButton& b : PAD_BUTTONS)
     {
         if (b.offset == padOffset) continue;
-        if (b.offset >= 0x10 && *(int16_t*)(PAD0_ADDR + b.offset) != 0) return false;   // d-pad, buttons, start/select, L3/R3
+        if (b.offset >= 0x10 && *(int16_t*)(PAD0_ADDR + b.offset) != 0) return false;   // direcionais, botoes, start/select, L3/R3
     }
     return true;
 }
@@ -455,11 +474,11 @@ static bool KeyPressed(int vk)
     if (!vk) return false;
     HWND fg = GetForegroundWindow();
     DWORD pid = 0; if (fg) GetWindowThreadProcessId(fg, &pid);
-    if (pid != GetCurrentProcessId()) return false;       // only when the game is focused
+    if (pid != GetCurrentProcessId()) return false;       // so quando o jogo esta em foco
     return (GetAsyncKeyState(vk) & 0x8000) != 0;
 }
 
-// ---- which device the player is using (like GInput): controller or keyboard/mouse ----
+// ---- qual dispositivo o jogador esta usando (como o GInput): controle ou teclado/mouse ----
 static bool  g_usingPad = false;
 static long  g_trkMouseX = -100000, g_trkMouseY = -100000;
 
@@ -468,8 +487,8 @@ static bool MouseButtonsDown()
     return (GetAsyncKeyState(VK_LBUTTON) & 0x8000) || (GetAsyncKeyState(VK_RBUTTON) & 0x8000) || (GetAsyncKeyState(VK_MBUTTON) & 0x8000);
 }
 
-// Like GInput: the cursor appears when using the mouse and disappears when using the controller (and, in the
-// Retry menu, also the keyboard arrows). The last input used takes priority.
+// Como o GInput: o cursor aparece quando voce usa o mouse e some quando voce usa o controle (e, no menu de
+// Retry, tambem as setas do teclado). Vale o que aconteceu por ultimo.
 static void TrackInputDevice(bool inMenu)
 {
     if (!GameIsForeground()) return;
@@ -483,7 +502,7 @@ static void TrackInputDevice(bool inMenu)
     }
     else if (g_padSource != 1)
     {
-        // controller without XInput (GInput/DirectInput): only game pad buttons, and never near a keyboard key
+        // controle sem XInput (GInput/DirectInput): so botoes do pad do jogo, e nunca perto de uma tecla do teclado
         const DWORD tnow = GetTickCount();
         if (AnyKeyboardKeyDown()) g_lastKeyTick = tnow;
         if (tnow - g_lastKeyTick >= KEY_GRACE_MS)
@@ -502,11 +521,11 @@ static void TrackInputDevice(bool inMenu)
     const bool arrowAct = inMenu && ((GetAsyncKeyState(VK_UP) & 0x8000) || (GetAsyncKeyState(VK_DOWN) & 0x8000) ||
                                      (GetAsyncKeyState(VK_LEFT) & 0x8000) || (GetAsyncKeyState(VK_RIGHT) & 0x8000));
 
-    if (mouseAct)                    g_usingPad = false;      // mouse: cursor appears
-    else if (padAct || arrowAct)     g_usingPad = true;       // controller or arrows: cursor disappears
+    if (mouseAct)                    g_usingPad = false;      // mouse: cursor aparece
+    else if (padAct || arrowAct)     g_usingPad = true;       // controle ou setas: cursor some
 }
 
-// LEFT analog stick vertical: -1 = up, +1 = down, 0 = neutral
+// Analogico ESQUERDO na vertical: -1 = cima, +1 = baixo, 0 = neutro
 static int LeftStickVertical()
 {
     if (g_padSource != 2)
@@ -515,13 +534,13 @@ static int LeftStickVertical()
         if (ReadXInput(xg))
         {
             if (!GameIsForeground()) return 0;
-            if (xg.ly >  16000) return -1;           // XInput: positive = up
+            if (xg.ly >  16000) return -1;           // XInput: positivo = para cima
             if (xg.ly < -16000) return  1;
             return 0;
         }
         if (g_padSource == 1) return 0;
     }
-    // game pad (GInput): LeftStickY ranges from -128 to 127, negative = up. Ignored near keyboard keys (W/S become analog input).
+    // pad do jogo (GInput): LeftStickY vai de -128 a 127, negativo = cima. Ignorado perto de teclas (W/S viram analogico).
     const DWORD tnow = GetTickCount();
     if (AnyKeyboardKeyDown()) g_lastKeyTick = tnow;
     if (tnow - g_lastKeyTick < KEY_GRACE_MS) return 0;
@@ -531,7 +550,7 @@ static int LeftStickVertical()
     return 0;
 }
 
-// ---- prevents input pressed in the menu from "leaking" into gameplay (e.g. confirm click = punch) ----
+// ---- impede que o que foi apertado no menu "vaze" para a gameplay (ex.: clique de confirmar = soco) ----
 static bool  g_suppress = false;
 static DWORD g_suppressStart = 0, g_suppressLastHeld = 0;
 
@@ -554,8 +573,8 @@ static void BeginSuppress()
 typedef void (__cdecl *UpdatePads_t)();
 static UpdatePads_t g_origUpdatePads = nullptr;
 
-// Right after the game reads the controls: while suppression is active, clear the pad state
-// (NewState and OldState), so nothing pressed in the menu reaches the player.
+// Logo depois de o jogo ler os controles: enquanto a supressao esta ativa, zera o estado do pad
+// (NewState e OldState), assim nada do que foi apertado no menu chega ao jogador.
 static void __cdecl Hook_UpdatePads()
 {
     g_origUpdatePads();
@@ -565,7 +584,7 @@ static void __cdecl Hook_UpdatePads()
     if (now - g_suppressStart > 3000 || (now - g_suppressStart > 250 && now - g_suppressLastHeld > 200))
     {
         g_suppress = false;
-        Log("Input released for gameplay.");
+        Log("Entrada liberada para a gameplay.");
         return;
     }
     memset((void*)PAD0_ADDR, 0, 0x60);
@@ -577,28 +596,28 @@ static bool StrEquals(const char* a, const char* b)
     return strcmp(a, b) == 0;
 }
 
-// ======================= Mod state =======================
+// ======================= Estado do mod =======================
 static bool     g_haveSaved   = false;
 static bool     g_prevOnMission = false;
-static DWORD    g_failTime    = 0;    // last time "mission failed" was detected (game timer)
+static DWORD    g_failTime    = 0;    // ultima vez que "mission failed" foi detectado (timer do jogo)
 static bool     g_failSeen    = false;
 static DWORD    g_missionEndTime = 0;
-static bool     g_pending     = false;  // failure detected, waiting for the player to resume control
+static bool     g_pending     = false;  // falha detectada, esperando o jogador voltar a jogar
 static DWORD    g_lastBusy    = 0;
 static bool     g_prompting   = false;
 static DWORD    g_promptStart = 0;
 static bool     g_prevKey = false, g_prevPad = false;
 static bool     g_prevCKey = false, g_prevCPad = false, g_prevEsc = false;
 
-// Pause prompt phases
+// Fases da pausa do aviso
 enum Phase { PH_NONE = 0, PH_REQUEST, PH_ACTIVE, PH_CLOSING };
 static Phase    g_phase = PH_NONE;
-static DWORD    g_phaseTick = 0;          // GetTickCount (real time; game timer stops while paused)
+static DWORD    g_phaseTick = 0;          // GetTickCount (tempo real; o timer do jogo para na pausa)
 static bool     g_acceptAfterClose = false;
 static bool     g_teleportPending = false;
 static bool     g_forcedActivate = false;
 
-// Snapshot of game state (weapons, health, armor, wanted, time, weather, position)
+// Foto do estado do jogo (armas, vida, colete, procurado, hora, clima, posicao)
 struct WeaponSnap { int32_t type, ammoInClip, totalAmmo; };
 struct StateSnap
 {
@@ -614,9 +633,12 @@ struct StateSnap
     int16_t    seconds;
     int16_t    weatherOld, weatherNew, weatherForced;
     float      weatherInterp;
+    bool       hasClothes;
+    uint8_t    clothes[CLOTHES_DESC_SIZE];
+    uint8_t    stats[STATS_REGION_SIZE];
 };
-static StateSnap g_rolling = {};   // continuous snapshot, updated every frame while there is NO mission
-static StateSnap g_snap    = {};   // "official" snapshot: the one from when the mission started
+static StateSnap g_rolling = {};   // foto continua, atualizada a cada frame enquanto NAO ha missao
+static StateSnap g_snap    = {};   // foto "oficial": a do momento em que a missao comecou
 
 static uint8_t* PlayerInfo()
 {
@@ -653,23 +675,39 @@ static void TakeSnapshot(uint8_t* ped, StateSnap& o)
     o.weatherNew    = *(int16_t*)ADDR_WEATHER_NEW;
     o.weatherForced = *(int16_t*)ADDR_WEATHER_FORCED;
     o.weatherInterp = *(float*)ADDR_WEATHER_INTERP;
+    o.hasClothes = false;
+    uint8_t* pdata = *(uint8_t**)(ped + PED_PLAYERDATA_OFF);
+    uint8_t* desc  = pdata ? *(uint8_t**)(pdata + PLAYERDATA_CLOTHES_OFF) : nullptr;
+    if (desc) { memcpy(o.clothes, desc, CLOTHES_DESC_SIZE); o.hasClothes = true; }
+    memcpy(o.stats, (const void*)STATS_REGION_ADDR, STATS_REGION_SIZE);
     o.valid = true;
 }
 
 static void LogSnapshot(const char* title, const StateSnap& o)
 {
-    Log("%s: health=%.1f armor=%.1f money=%d wanted=%d (chaos %d) time=%02d:%02d weather=%d/%d slot=%d",
+    Log("%s: vida=%.1f colete=%.1f dinheiro=%d procurado=%d (caos %d) hora=%02d:%02d clima=%d/%d slot=%d",
         title, o.health, o.armour, o.money, o.wantedLevel, o.wantedChaos, o.hours, o.minutes,
         o.weatherOld, o.weatherNew, (int)o.activeSlot);
     for (int i = 0; i < WEAPON_SLOTS; ++i)
         if (o.w[i].type > 0)
-            Log("   slot %d: weapon %d, ammo %d (clip %d)", i, o.w[i].type, o.w[i].totalAmmo, o.w[i].ammoInClip);
+            Log("   slot %d: arma %d, municao %d (pente %d)", i, o.w[i].type, o.w[i].totalAmmo, o.w[i].ammoInClip);
 }
 
-// Applies the saved weapons/health/armor/wanted level. Returns true if anything needed correction.
+// Aplica as armas/vida/colete/procurado salvos. Devolve true se algo precisou ser corrigido.
 static void ApplyPlayerState(uint8_t* ped, bool firstTime)
 {
     const StateSnap& S = g_snap;
+
+    // Roupa, cabelo e tatuagens (e, se ligado, stats/skills): restaura antes das armas, porque reconstruir o
+    // personagem recria o modelo.
+    if (firstTime && (g_restoreClothes || g_restoreStats))
+    {
+        if (g_restoreStats) { memcpy((void*)STATS_REGION_ADDR, S.stats, STATS_REGION_SIZE); Log("   stats/skills restaurados."); }
+        uint8_t* pdata = *(uint8_t**)(ped + PED_PLAYERDATA_OFF);
+        uint8_t* desc  = pdata ? *(uint8_t**)(pdata + PLAYERDATA_CLOTHES_OFF) : nullptr;
+        if (g_restoreClothes && desc && S.hasClothes) { memcpy(desc, S.clothes, CLOTHES_DESC_SIZE); Log("   roupa, cabelo e tatuagens restaurados."); }
+        ((void (__cdecl*)(void*, int))FN_REBUILD_PLAYER)(ped, 0);       // reconstroi o personagem com o que foi restaurado
+    }
 
     if (g_restoreWeapons)
     {
@@ -685,7 +723,7 @@ static void ApplyPlayerState(uint8_t* ped, bool firstTime)
             if (S.activeSlot >= 0 && S.activeSlot < WEAPON_SLOTS)
                 ((PedSetSlot_t)FN_PED_SET_CUR_WEAPON)(ped, S.activeSlot);
         }
-        // exact ammo (clip and total), checked on every call
+        // municao exata (pente e total), conferida a cada chamada
         for (int i = 0; i < WEAPON_SLOTS; ++i)
         {
             const WeaponSnap& ws = S.w[i];
@@ -694,26 +732,26 @@ static void ApplyPlayerState(uint8_t* ped, bool firstTime)
             if (w[0] != ws.type)
             {
                 ((PedGiveWeapon_t)FN_PED_GIVE_WEAPON)(ped, ws.type, (uint32_t)ws.totalAmmo, 1);
-                if (!firstTime) Log("   weapon %d had disappeared from slot %d; given again.", ws.type, i);
+                if (!firstTime) Log("   arma %d tinha sumido do slot %d; entregue de novo.", ws.type, i);
             }
             if (w[0] == ws.type && (w[2] != ws.ammoInClip || w[3] != ws.totalAmmo))
             {
-                if (!firstTime) Log("   slot %d ammo changed (%d/%d); correcting to %d/%d.", i, w[3], w[2], ws.totalAmmo, ws.ammoInClip);
+                if (!firstTime) Log("   municao do slot %d mudou (%d/%d); corrigindo para %d/%d.", i, w[3], w[2], ws.totalAmmo, ws.ammoInClip);
                 w[2] = ws.ammoInClip;
                 w[3] = ws.totalAmmo;
-                if (ws.totalAmmo > 0 && w[1] == 3) w[1] = 0;     // 3 = out of ammo
+                if (ws.totalAmmo > 0 && w[1] == 3) w[1] = 0;     // 3 = sem municao
             }
         }
     }
     if (g_restoreHealth)
     {
         float* h = (float*)(ped + PED_HEALTH_OFF);
-        if (*h != S.health) { if (!firstTime) Log("   health changed (%.1f); correcting to %.1f.", *h, S.health); *h = S.health; }
+        if (*h != S.health) { if (!firstTime) Log("   vida mudou (%.1f); corrigindo para %.1f.", *h, S.health); *h = S.health; }
     }
     if (g_restoreArmour)
     {
         float* a = (float*)(ped + PED_ARMOUR_OFF);
-        if (*a != S.armour) { if (!firstTime) Log("   armor changed (%.1f); correcting to %.1f.", *a, S.armour); *a = S.armour; }
+        if (*a != S.armour) { if (!firstTime) Log("   colete mudou (%.1f); corrigindo para %.1f.", *a, S.armour); *a = S.armour; }
     }
     if (g_restoreMoney)
     {
@@ -721,10 +759,10 @@ static void ApplyPlayerState(uint8_t* ped, bool firstTime)
         int32_t* display = (int32_t*)(PlayerInfo() + PLAYER_DISPLAY_OFF);
         if (*money != S.money || *display != S.money)
         {
-            if (!firstTime) Log("   money changed (%d); correcting to %d.", *money, S.money);
+            if (!firstTime) Log("   dinheiro mudou (%d); corrigindo para %d.", *money, S.money);
             *money = S.money;
-            *display = S.money;      // displayed value changes immediately, without animation
-            *(int32_t*)ADDR_HUD_LAST_MONEY = S.money;   // HUD does not need to animate the change
+            *display = S.money;      // o valor mostrado na tela muda na hora, sem contagem
+            *(int32_t*)ADDR_HUD_LAST_MONEY = S.money;   // o HUD nao precisa animar a mudanca
         }
     }
     if (g_restoreWanted)
@@ -737,16 +775,16 @@ static void ApplyPlayerState(uint8_t* ped, bool firstTime)
             if (firstTime || *level != S.wantedLevel)
             {
                 const int before = *level, chaosBefore = *chaos;
-                // official game function: adjusts chaos and CLEARS the pending crime queue (which caused the stars to return)
+                // funcao oficial do jogo: ajusta o caos e LIMPA a fila de crimes pendentes (que fazia as estrelas voltarem)
                 ((WantedSet_t)FN_WANTED_SET)(wanted, S.wantedLevel);
                 if (*level != S.wantedLevel)
                 {
-                    // the game refused (lower maximum level or "never wanted" cheat): keep what the game set
-                    Log("   wanted: requested %d, became %d (maximum allowed %d, 'never wanted' %d).", S.wantedLevel, *level,
+                    // o jogo recusou (nivel maximo menor ou cheat "nunca procurado"): mantem o que o jogo definiu
+                    Log("   procurado: pediu %d, ficou %d (maximo permitido %d, 'nunca procurado' %d).", S.wantedLevel, *level,
                         *(int32_t*)ADDR_WANTED_MAXLVL, (int)*(uint8_t*)ADDR_WANTED_NEVER);
                 }
                 if (firstTime || before != *level)
-                    Log("   wanted: %d (chaos %d) -> %d (chaos %d); saved was %d.", before, chaosBefore, *level, *chaos, S.wantedLevel);
+                    Log("   procurado: %d (caos %d) -> %d (caos %d); salvo era %d.", before, chaosBefore, *level, *chaos, S.wantedLevel);
             }
         }
     }
@@ -760,13 +798,17 @@ static void ApplyWorldState(bool firstTime)
         ((SetClock_t)FN_SET_GAME_CLOCK)(S.hours, S.minutes, 0);
         *(int16_t*)ADDR_CLOCK_SECONDS = S.seconds;
     }
-    *(int16_t*)ADDR_WEATHER_OLD    = S.weatherOld;
-    *(int16_t*)ADDR_WEATHER_NEW    = S.weatherNew;
+    // Imediato, como um cheat de clima (que chama ForceWeatherNow), mas sem registrar como cheat: o clima que estava
+    // visivel quando a missao comecou (o antigo ou o novo, conforme a interpolacao) vira o clima atual nas duas variaveis,
+    // sem transicao gradual. O clima forcado volta ao que era (normalmente nenhum).
+    const int16_t type = (S.weatherInterp >= 0.5f) ? S.weatherNew : S.weatherOld;
+    *(int16_t*)ADDR_WEATHER_OLD    = type;
+    *(int16_t*)ADDR_WEATHER_NEW    = type;
     *(int16_t*)ADDR_WEATHER_FORCED = S.weatherForced;
-    *(float*)ADDR_WEATHER_INTERP   = S.weatherInterp;
+    *(float*)ADDR_WEATHER_INTERP   = 0.0f;
 }
 
-// ---- HUD protection: the money counter (and other items) must not remain hidden because of the pause ----
+// ---- protecao do HUD: o contador de dinheiro (e os outros itens) nao pode ficar escondido por causa da pausa ----
 struct HudSnap { int32_t v[4][3]; bool valid; };
 static HudSnap g_hudSaved = {};
 static DWORD   g_hudGuardUntil = 0;
@@ -776,7 +818,7 @@ static void SaveHud()
     for (int i = 0; i < 4; ++i)
         for (int k = 0; k < 3; ++k) g_hudSaved.v[i][k] = *(int32_t*)(HUD_ITEM_BASES[i] + k * 4);
     g_hudSaved.valid = true;
-    Log("HUD saved: money state=%d (times %d/%d).", g_hudSaved.v[2][0], g_hudSaved.v[2][1], g_hudSaved.v[2][2]);
+    Log("HUD salvo: dinheiro estado=%d (tempos %d/%d).", g_hudSaved.v[2][0], g_hudSaved.v[2][1], g_hudSaved.v[2][2]);
 }
 
 static void GuardHud()
@@ -785,15 +827,15 @@ static void GuardHud()
     for (int i = 0; i < 4; ++i)
     {
         int32_t* cur = (int32_t*)HUD_ITEM_BASES[i];
-        if (cur[0] == 0 && g_hudSaved.v[i][0] != 0)       // became hidden, but was visible before
+        if (cur[0] == 0 && g_hudSaved.v[i][0] != 0)       // ficou escondido, mas antes estava aparecendo
         {
-            Log("HUD: item %d disappeared (state 0); restoring state %d.", i, g_hudSaved.v[i][0]);
+            Log("HUD: item %d tinha sumido (estado 0); restaurando estado %d.", i, g_hudSaved.v[i][0]);
             for (int k = 0; k < 3; ++k) cur[k] = g_hudSaved.v[i][k];
         }
     }
 }
 
-// For some time after restarting, check the values again (something in the game may change them)
+// por algum tempo depois de recomecar, confere os valores de novo (algo do jogo pode mexer neles)
 static bool  g_reapply = false;
 static DWORD g_reapplyUntil = 0;
 
@@ -801,29 +843,45 @@ static void StartPrompt(DWORD /*now*/)
 {
     g_prompting = true; g_pending = false;
     g_phase = PH_REQUEST; g_phaseTick = GetTickCount(); g_forcedActivate = false;
-    if (!*(uint8_t*)ADDR_MENU_ACTIVE) ((VoidFn_t)FN_REQUEST_PAUSE)();     // request pause (like pressing Esc)
-    Log("Pause requested to show the prompt.");
+    if (!*(uint8_t*)ADDR_MENU_ACTIVE) ((VoidFn_t)FN_REQUEST_PAUSE)();     // pede a pausa (como apertar Esc)
+    Log("Pausa solicitada para mostrar o aviso.");
+}
+
+// Tira o jogador do veiculo usando a mesma tarefa que o jogo usa (CTaskSimpleCarSetPedOut::SetPedOut), do mesmo jeito que
+// o proprio jogo faz ao mover o jogador para outro lugar estando dentro de um carro. Sem isso o Teleport nao funciona.
+static bool LeaveVehicle(uint8_t* ped)
+{
+    if (!(*(uint32_t*)(ped + 0x46C) & 0x100)) return false;         // bInVehicle
+    void* veh = *(void**)(ped + 0x58C);                              // m_pVehicle
+    if (!veh) return false;
+    alignas(16) uint8_t task[0x40] = {};                             // objeto CTaskSimpleCarSetPedOut na pilha
+    ((void (__thiscall*)(void*, void*, int, int))0x6478B0)(task, veh, 0, 1);   // construtor(veiculo, porta, true)
+    task[0x11] = 1;
+    ((void (__thiscall*)(void*, void*))0x647D10)(task, ped);        // SetPedOut(ped)
+    ((void (__thiscall*)(void*))0x647950)(task);                    // destrutor (solta a referencia ao veiculo)
+    return true;
 }
 
 static void DoTeleport(uint8_t* ped)
 {
     const StateSnap& S = g_snap;
+    if (LeaveVehicle(ped)) Log("Jogador estava em um veiculo: removido antes de teleportar.");
     *(int32_t*)ADDR_CURR_AREA = S.area;
     *(uint8_t*)(ped + ENTITY_AREA_OFF) = (uint8_t)S.area;
     ((LoadScene_t)FN_LOAD_SCENE)(S.pos);
     ((PedTeleport_t)FN_PED_TELEPORT)(ped, S.pos[0], S.pos[1], S.pos[2], 0);
 
-    LogSnapshot("Before restoring (current state)", [&]{ StateSnap cur = {}; TakeSnapshot(ped, cur); return cur; }());
+    LogSnapshot("Antes de restaurar (estado atual)", [&]{ StateSnap cur = {}; TakeSnapshot(ped, cur); return cur; }());
     ApplyPlayerState(ped, true);
     if (g_restoreTimeWeather) ApplyWorldState(true);
     g_reapply = true;
     g_reapplyUntil = GetTickCount() + 2500;
     g_hudGuardUntil = GetTickCount() + 6000;
-    Log("Teleported to %.1f %.1f %.1f (area %d) and state restored.", S.pos[0], S.pos[1], S.pos[2], S.area);
-    LogSnapshot("State saved at marker", S);
+    Log("Teleportado para %.1f %.1f %.1f (area %d) e estado restaurado.", S.pos[0], S.pos[1], S.pos[2], S.area);
+    LogSnapshot("Estado salvo no marcador", S);
 }
 
-// Called once per logic frame (inside CGame::Process, immediately after CGameLogic::Update)
+// Chamado uma vez por frame de logica (dentro de CGame::Process, logo apos CGameLogic::Update)
 static void Tick()
 {
     CheckReload();
@@ -842,27 +900,27 @@ static void Tick()
     const bool pedDown = (pedState == 0x36 || pedState == 0x37 || pedState == 0x3F);
     const bool cutscene = IsCutscene();
 
-    // While there is NO mission and the player is fine, keep an updated snapshot of the state.
-    // (so, at the exact moment the mission starts, we use the snapshot from the previous frame, before the
-    // mission script changes weapons, health, wanted level, etc.)
+    // Enquanto NAO ha missao e o jogador esta bem, mantem uma foto atualizada do estado.
+    // (assim, no instante em que a missao comeca, usamos a foto do frame anterior, antes de o
+    // script da missao mexer em armas, vida, procurado etc.)
     if (!onMission && !cutscene && gameState == 0 && !pedDown && *(float*)(ped + PED_HEALTH_OFF) > 0.5f)
         TakeSnapshot(ped, g_rolling);
 
-    // Mission started: save the state from when the player stepped on the marker
+    // Missao comecou: grava o estado de quando o jogador pisou no marcador
     if (onMission && !g_prevOnMission)
     {
         if (g_rolling.valid) g_snap = g_rolling;
         else                 TakeSnapshot(ped, g_snap);
         g_haveSaved = true;
         g_pending = false; g_prompting = false; g_failSeen = false; g_reapply = false;
-        Log("Mission started. Marker saved: %.1f %.1f %.1f (area %d).", g_snap.pos[0], g_snap.pos[1], g_snap.pos[2], g_snap.area);
-        LogSnapshot("Saved state", g_snap);
+        Log("Missao iniciada. Marcador salvo: %.1f %.1f %.1f (area %d).", g_snap.pos[0], g_snap.pos[1], g_snap.pos[2], g_snap.area);
+        LogSnapshot("Estado salvo", g_snap);
     }
 
-    // Immediately after restarting: check for 1.5 seconds whether the restored state remains correct
+    // Logo depois de recomecar: confere por 1,5 s se o estado restaurado continua certo
     if (g_reapply)
     {
-        if ((int32_t)(GetTickCount() - g_reapplyUntil) > 0) { g_reapply = false; Log("Post-restore check ended."); }
+        if ((int32_t)(GetTickCount() - g_reapplyUntil) > 0) { g_reapply = false; Log("Conferencia pos-restauracao encerrada."); }
         else
         {
             ApplyPlayerState(ped, false);
@@ -870,29 +928,29 @@ static void Tick()
         }
     }
 
-    // Died / arrested during the mission counts as a failure
+    // Morreu / foi preso durante a missao conta como falha
     if (onMission && (gameState != 0 || pedDown))
     {
         g_failSeen = true; g_failTime = now;
     }
 
-    // Mission ended
+    // Missao terminou
     if (!onMission && g_prevOnMission)
     {
         g_missionEndTime = now;
         if (g_failSeen && now - g_failTime < 8000 && g_haveSaved)
         {
             g_pending = true;
-            Log("Mission ended with failure.");
+            Log("Missao terminou com falha.");
         }
         else
         {
-            Log("Mission ended without failure (or without saved marker).");
+            Log("Missao terminou sem falha (ou sem marcador salvo).");
         }
     }
     g_prevOnMission = onMission;
 
-    // "MISSION FAILED" message arrived after the mission ended (or during): see hook below
+    // Mensagem "MISSION FAILED" chegou depois do fim da missao (ou durante): ver hook abaixo
     if (!onMission && g_failSeen && g_haveSaved && !g_pending && !g_prompting &&
         now - g_failTime < 8000 && now - g_missionEndTime < 8000)
         g_pending = true;
@@ -900,21 +958,21 @@ static void Tick()
     if (gameState != 0 || pedDown || cutscene || onMission)
         g_lastBusy = now;
 
-    // Show the prompt when the player has regained control of the character
-    if (g_pending && !g_prompting && now - g_lastBusy >= 1000)
+    // Mostra o aviso quando o jogador voltou a controlar o personagem
+    if (g_pending && !g_prompting && now - g_lastBusy >= 1000 && now - g_failTime >= (DWORD)(g_promptDelaySec * 1000.0f))
     {
         StartPrompt(now);
         g_failSeen = false;
     }
 
-    // Request phase (not paused yet): cancel if something interferes
+    // Fase de pedido (ainda nao pausou): cancela se algo atrapalhar
     if (g_phase == PH_REQUEST && (onMission || cutscene || gameState != 0 || pedDown))
     {
         g_phase = PH_NONE; g_prompting = false;
-        Log("Prompt canceled before pausing.");
+        Log("Aviso cancelado antes de pausar.");
     }
 
-    // After the menu closes with "yes": teleport and restore
+    // Depois que o menu fechou com "sim": teleporta e restaura
     if (g_teleportPending && !*(uint8_t*)ADDR_MENU_ACTIVE)
     {
         g_teleportPending = false;
@@ -922,7 +980,7 @@ static void Tick()
     }
 }
 
-// ======================= On-screen text =======================
+// ======================= Texto na tela =======================
 static void ExpandMessage(char* out, size_t outSize)
 {
     size_t len = 0; out[0] = 0;
@@ -938,31 +996,44 @@ static void ExpandMessage(char* out, size_t outSize)
     }
 }
 
-// prepares the text for the game's 8-bit font; accented characters become plain letters
+// Converte o texto do .ini (UTF-8 ou ANSI) para os codigos de caractere do jogo. "s" e "S" com caron (U+0161/U+0160)
+// viram SmallSCode/CapitalSCode; as demais letras acentuadas viram a letra simples.
+static unsigned StripAccent(unsigned cp)
+{
+    static const char* from = "\xC0\xC1\xC2\xC3\xC4\xC5\xC7\xC8\xC9\xCA\xCB\xCC\xCD\xCE\xCF\xD1\xD2\xD3\xD4\xD5\xD6\xD9\xDA\xDB\xDC\xDD"
+                              "\xE0\xE1\xE2\xE3\xE4\xE5\xE7\xE8\xE9\xEA\xEB\xEC\xED\xEE\xEF\xF1\xF2\xF3\xF4\xF5\xF6\xF9\xFA\xFB\xFC\xFD\xFF";
+    static const char* to   = "AAAAAACEEEEIIIINOOOOOUUUUY"
+                              "aaaaaaceeeeiiiinooooouuuuyy";
+    if (cp >= 0xC0 && cp <= 0xFF)
+    {
+        const char* p = (const char*)memchr(from, (int)cp, strlen(from));
+        if (p) return (unsigned char)to[p - from];
+    }
+    return '?';
+}
+
 static void ToGameText(const char* s, char* out, size_t outCount)
 {
-    static const char* from = "\xE1\xE0\xE2\xE3\xE4\xE9\xE8\xEA\xEB\xED\xEC\xEE\xEF\xF3\xF2\xF4\xF5\xF6\xFA\xF9\xFB\xFC\xE7\xF1"
-                              "\xC1\xC0\xC2\xC3\xC4\xC9\xC8\xCA\xCB\xCD\xCC\xCE\xCF\xD3\xD2\xD4\xD5\xD6\xDA\xD9\xDB\xDC\xC7\xD1";
-    static const char* to   = "aaaaaeeeeiiiioooooouuuucn"
-                              "AAAAAEEEEIIIIOOOOOUUUUCN";
     size_t o = 0;
-    for (; *s && o + 1 < outCount; ++s)
+    while (*s && o + 1 < outCount)
     {
-        unsigned char c = (unsigned char)*s;
-        if (c >= 0x80)
-        {
-            const char* p = (const char*)memchr(from, c, strlen(from));
-            c = p ? (unsigned char)to[p - from] : (unsigned char)'?';
-        }
-        out[o++] = (char)c;
+        const unsigned char c = (unsigned char)*s;
+        unsigned cp = 0; int len = 0;
+        if (c < 0x80) { out[o++] = (char)c; ++s; continue; }
+        if (c >= 0xC2 && c <= 0xDF && (s[1] & 0xC0) == 0x80)                                   { cp = ((c & 0x1F) << 6) | (s[1] & 0x3F); len = 2; }
+        else if (c >= 0xE0 && c <= 0xEF && (s[1] & 0xC0) == 0x80 && (s[2] & 0xC0) == 0x80)     { cp = ((c & 0x0F) << 12) | ((s[1] & 0x3F) << 6) | (s[2] & 0x3F); len = 3; }
+        unsigned code;
+        if (len) { code = (cp == 0x161) ? (unsigned)g_sCodeSmall : (cp == 0x160) ? (unsigned)g_sCodeCap : StripAccent(cp); s += len; }
+        else     { code = (c == 0x9A) ? (unsigned)g_sCodeSmall : (c == 0x8A) ? (unsigned)g_sCodeCap : StripAccent(c); ++s; }   // ANSI: 0x9A/0x8A
+        out[o++] = (char)code;
     }
     out[o] = 0;
 }
 
-struct RectF { float left, bottom, right, top; };    // game's CRect (bottom = larger y)
+struct RectF { float left, bottom, right, top; };    // CRect do jogo (bottom = y maior)
 struct Rgba8 { uint8_t r, g, b, a; };
 
-// ---- mouse (game coordinates) ----
+// ---- mouse (coordenadas do jogo) ----
 static bool GetMouseGame(float& mx, float& my)
 {
     HWND fg = GetForegroundWindow();
@@ -984,10 +1055,10 @@ static void FillRectPx(float l, float t, float r, float b, uint8_t cr, uint8_t c
     ((void (__cdecl*)(RectF*, Rgba8*))FN_DRAW_RECT)(&rc, &col);
 }
 
-// Arrow-shaped cursor made from rectangles: only used if the game's original texture has not been loaded
+// Cursor em forma de seta, feito de retangulos: so e usado se a textura original do jogo nao estiver carregada
 static void DrawArrowCursor(float x, float y)
 {
-    const float u = (float)*pScreenH / 1080.0f * 2.0f;     // 1 "pixel" of the arrow
+    const float u = (float)*pScreenH / 1080.0f * 2.0f;     // 1 "pixel" da seta
     auto shape = [&](float grow, uint8_t c) {
         for (int i = 0; i < 17; ++i)
         {
@@ -1002,13 +1073,13 @@ static void DrawArrowCursor(float x, float y)
     shape(0.0f, 255);
 }
 
-// ORIGINAL game cursor: the menu itself loads the "mouse" texture (with the "mousea" mask) from the
-// game files into a CSprite2d. We draw this sprite with the same size and shadow used by the menu.
+// Cursor ORIGINAL do jogo: o proprio menu carrega a textura "mouse" (com a mascara "mousea") dos arquivos do
+// jogo em um CSprite2d. Desenhamos esse sprite com o mesmo tamanho e a mesma sombra que o menu usa.
 static void DrawGameCursor(float mx, float my)
 {
     void* menu = (void*)MENU_OBJ;
     uint8_t* sprite = (uint8_t*)(MENU_OBJ + MENU_SPRITE_OFF);
-    if (!*(void**)sprite) { DrawArrowCursor(mx, my); return; }       // texture not loaded yet
+    if (!*(void**)sprite) { DrawArrowCursor(mx, my); return; }       // textura ainda nao carregada
 
     auto stretchX = [&](float v) { return ((float (__thiscall*)(void*, float))FN_STRETCH_X)(menu, v); };
     auto stretchY = [&](float v) { return ((float (__thiscall*)(void*, float))FN_STRETCH_Y)(menu, v); };
@@ -1019,25 +1090,25 @@ static void DrawGameCursor(float mx, float my)
 
     const float w = stretchX(18.0f), h = stretchY(18.0f);
     Rgba8 shadow = { 100, 100, 100, 50 };
-    draw(mx + stretchX(6.0f), my + stretchY(3.0f), mx + stretchX(24.0f), my + stretchY(21.0f), shadow);   // shadow
+    draw(mx + stretchX(6.0f), my + stretchY(3.0f), mx + stretchX(24.0f), my + stretchY(21.0f), shadow);   // sombra
     Rgba8 white = { 255, 255, 255, 255 };
-    draw(mx, my, mx + w, my + h, white);                                                                    // arrow
+    draw(mx, my, mx + w, my + h, white);                                                                    // seta
 }
 
-// ---- menu layout: title, Yes, No (centered) ----
+// ---- layout do menu: titulo, Yes, No (centralizados) ----
 struct MenuLayout { float step, top[3], bandL, bandR; };
 static MenuLayout GetLayout(float W, float H)
 {
     MenuLayout L;
-    L.step = H * 0.0676f * g_lineSpacing;                 // spacing between pause menu options
-    const float y0 = H * g_msgY / 100.0f + g_msgOffY;     // top of the "Yes" line
+    L.step = H * 0.0676f * g_lineSpacing;                 // espacamento entre as opcoes do menu de pausa
+    const float y0 = H * g_msgY / 100.0f + g_msgOffY;     // topo da linha "Yes"
     L.top[0] = y0 - L.step; L.top[1] = y0; L.top[2] = y0 + L.step;
     L.bandL = W * 0.5f - W * 0.17f + g_msgOffX;
     L.bandR = W * 0.5f + W * 0.17f + g_msgOffX;
     return L;
 }
 
-static int HitItem(const MenuLayout& L, float mx, float my)      // 0 = Yes, 1 = No, -1 = none
+static int HitItem(const MenuLayout& L, float mx, float my)      // 0 = Yes, 1 = No, -1 = nenhum
 {
     if (mx < L.bandL || mx > L.bandR) return -1;
     for (int i = 0; i < 2; ++i)
@@ -1049,7 +1120,7 @@ static int   g_sel = 0;                   // 0 = Yes, 1 = No
 static float g_mx = -1, g_my = -1;
 static float g_lastMouseX = -1000, g_lastMouseY = -1000;
 static bool  g_mouseSeen = false;
-static bool  g_cursorVisible = true;          // disappears when the player uses the controller (like GInput)
+static bool  g_cursorVisible = true;          // some quando o jogador usa o controle (como no GInput)
 static uint8_t g_savedMouseFlag = 0;
 
 static void PlayMenuSound(int ev)
@@ -1064,12 +1135,12 @@ static void PrintMenuLine(const char* text, float x, float y, uint32_t color)
     ((void (__cdecl*)(float, float, const char*))FN_FONT_PRINT)(x, y, gtext);
 }
 
-// Covers the pause menu option area (black background) and writes "Retry? / Yes / No" in the center
+// Cobre a area das opcoes do menu de pausa (fundo preto) e escreve "Retry? / Yes / No" no centro
 static void DrawPauseMenu(const MenuLayout& L)
 {
     const float W = (float)*pScreenW, H = (float)*pScreenH;
 
-    // flushes the text already queued by the menu (the options), so the black rectangle is drawn ON TOP of it
+    // descarrega o texto que o menu ja enfileirou (as opcoes), para que o retangulo preto fique POR CIMA dele
     ((VoidFn_t)FN_FONT_RENDER_BUF)();
     FillRectPx(W * 0.18f, H * 0.27f, W * 0.82f, H * 0.83f, 0, 0, 0);
 
@@ -1078,11 +1149,11 @@ static void DrawPauseMenu(const MenuLayout& L)
     ((void (__cdecl*)(uint8_t))FN_FONT_SET_PROP)(1);
     ((void (__cdecl*)(uint8_t, uint8_t))FN_FONT_SET_BG)(0, 0);
     ((void (__cdecl*)(uint8_t))FN_FONT_SET_JUSTIFY)(0);
-    ((void (__cdecl*)(uint8_t))FN_FONT_SET_ORIENT)(0);            // centered
+    ((void (__cdecl*)(uint8_t))FN_FONT_SET_ORIENT)(0);            // centralizado
     ((void (__cdecl*)(float))FN_FONT_SET_WRAPX)(W);
     ((void (__cdecl*)(float))FN_FONT_SET_CENTRE)(W);
-    ((void (__cdecl*)(uint8_t))FN_FONT_SET_STYLE)(2);             // menu option font
-    ((void (__cdecl*)(uint8_t))FN_FONT_SET_EDGE)(2);              // shadow, like the options
+    ((void (__cdecl*)(uint8_t))FN_FONT_SET_STYLE)(2);             // fonte das opcoes do menu
+    ((void (__cdecl*)(uint8_t))FN_FONT_SET_EDGE)(2);              // sombra, como nas opcoes
     ((void (__cdecl*)(uint32_t))FN_FONT_SET_DROPCOLOR)(0xFF000000u);
     ((void (__cdecl*)(float, float))FN_FONT_SET_SCALE)(0.70f * W / 640.0f * g_scaleMul, H / 448.0f * g_scaleMul);
 
@@ -1091,7 +1162,7 @@ static void DrawPauseMenu(const MenuLayout& L)
     PrintMenuLine(g_yesText, cx, L.top[1], g_sel == 0 ? g_selColor : g_normColor);
     PrintMenuLine(g_noText,  cx, L.top[2], g_sel == 1 ? g_selColor : g_normColor);
 
-    // draw the text now so the cursor appears on top
+    // desenha o texto agora para o cursor ficar por cima
     ((VoidFn_t)FN_FONT_RENDER_BUF)();
 
     if (g_mouseSeen)
@@ -1104,14 +1175,14 @@ static void DrawPauseMenu(const MenuLayout& L)
 
 static void BeginClose(bool accept, const char* why)
 {
-    PlayMenuSound(accept ? SND_CONFIRM : SND_BACK);   // Yes = confirm sound; No/Esc/Y = back sound
-    BeginSuppress();                       // confirm click/key must not become a punch in gameplay
+    PlayMenuSound(accept ? SND_CONFIRM : SND_BACK);   // Yes = som de confirmar; No/Esc/Y = som de voltar
+    BeginSuppress();                       // o clique/tecla de confirmar nao pode virar soco na gameplay
     g_acceptAfterClose = accept;
     g_phase = PH_CLOSING; g_phaseTick = GetTickCount();
-    Log("%s -> %s.", why, accept ? "restart (teleport)" : "cancel");
+    Log("%s -> %s.", why, accept ? "recomecar (teleportar)" : "cancelar");
 }
 
-// previous command states (to detect "pressed now")
+// estados anteriores dos comandos (para detectar o "apertou agora")
 static bool g_pUp = false, g_pDown = false, g_pEnter = false, g_pOk = false, g_pClick = false;
 static bool g_pYes = false, g_pNo = false, g_pEsc = false, g_pBack = false;
 
@@ -1122,7 +1193,7 @@ static bool MouseClickDown()
     return pid == GetCurrentProcessId() && (GetAsyncKeyState(VK_LBUTTON) & 0x8000) != 0;
 }
 
-// When the Retry screen ends (for any reason): restore the menu cursor to normal and protect the HUD
+// Quando a tela de Retry termina (por qualquer motivo): devolve o cursor do menu ao normal e protege o HUD
 static void EndPauseCleanup()
 {
     *(uint8_t*)(MENU_OBJ + MENU_MOUSE_ON_OFF) = g_savedMouseFlag;
@@ -1130,7 +1201,7 @@ static void EndPauseCleanup()
     GuardHud();
 }
 
-// Called every rendered frame (including while the game is paused), immediately after CHud::Draw
+// Chamado a cada frame desenhado (inclusive com o jogo pausado), logo depois de CHud::Draw
 static void PauseFrame()
 {
     if (g_phase == PH_NONE) return;
@@ -1145,12 +1216,12 @@ static void PauseFrame()
         {
             g_phase = PH_ACTIVE; g_phaseTick = tnow;
             g_sel = 0; g_mouseSeen = false; g_lastMouseX = -1000; g_lastMouseY = -1000;
-            SaveHud();                                      // save HUD state (money counter, etc.)
-            g_hudGuardUntil = tnow + 600000;                // watch until the end of the pause and a little afterward
+            SaveHud();                                      // guarda o estado do HUD (contador de dinheiro etc.)
+            g_hudGuardUntil = tnow + 600000;                // vigia ate o fim da pausa e um pouco depois
             g_savedMouseFlag = *(uint8_t*)(MENU_OBJ + MENU_MOUSE_ON_OFF);
-            *(uint8_t*)(MENU_OBJ + MENU_MOUSE_ON_OFF) = 0;  // cursor is now drawn only by this mod
+            *(uint8_t*)(MENU_OBJ + MENU_MOUSE_ON_OFF) = 0;  // o cursor passa a ser desenhado so por este mod
             g_cursorVisible = !(g_hideCursorWithPad && g_usingPad);
-            // anything already held now does not count (only a new press)
+            // o que ja estiver apertado agora nao conta (so um aperto novo)
             const int stick0 = LeftStickVertical();
             g_pUp   = KeyPressed(VK_UP)     || PadDown(0x10, 0x0001, 0) || stick0 < 0;
             g_pDown = KeyPressed(VK_DOWN)   || PadDown(0x12, 0x0002, 0) || stick0 > 0;
@@ -1160,18 +1231,18 @@ static void PauseFrame()
             g_pYes = g_pNo = false;
             g_pEsc  = KeyPressed(VK_ESCAPE);
             g_pBack = PadDown(g_backOffset, g_backXMask, g_backXTrig);
-            Log("Game paused; Retry? menu on screen.");
+            Log("Jogo pausado; menu Retry? na tela.");
         }
         else if (tnow - g_phaseTick > 1500 && !g_forcedActivate)
         {
             g_forcedActivate = true;
-            *(uint8_t*)ADDR_MENU_ACTIVATE = 1;    // normal function refused the request; force activation
-            Log("Normal pause request did not work; forcing menu activation.");
+            *(uint8_t*)ADDR_MENU_ACTIVATE = 1;    // a funcao normal recusou o pedido; forca a ativacao
+            Log("Pedido normal de pausa nao funcionou; forcando a ativacao do menu.");
         }
         else if (tnow - g_phaseTick > 5000)
         {
             g_phase = PH_NONE; g_prompting = false;
-            Log("Unable to pause the game; prompt canceled.");
+            Log("Nao foi possivel pausar o jogo; aviso cancelado.");
         }
         return;
     }
@@ -1182,33 +1253,33 @@ static void PauseFrame()
         {
             g_phase = PH_NONE; g_prompting = false;
             EndPauseCleanup();
-            Log("Menu closed for another reason; prompt canceled.");
+            Log("Menu fechado por outro motivo; aviso cancelado.");
             return;
         }
 
         const float W = (float)*pScreenW, H = (float)*pScreenH;
         const MenuLayout L = GetLayout(W, H);
 
-        // ---- input ----
+        // ---- entrada ----
         TrackInputDevice(true);
         g_cursorVisible = !(g_hideCursorWithPad && g_usingPad);
-        const int  stick = LeftStickVertical();                      // left analog stick
+        const int  stick = LeftStickVertical();                      // analogico esquerdo
         const bool up    = KeyPressed(VK_UP)   || PadDown(0x10, 0x0001, 0) || stick < 0;
         const bool down  = KeyPressed(VK_DOWN) || PadDown(0x12, 0x0002, 0) || stick > 0;
         const bool enter = KeyPressed(VK_RETURN);
         const bool ok    = PadDown(0x20, 0x1000, 0);                 // Cross / A
         const bool click = MouseClickDown();
-        const bool yes = false, no = false;      // no shortcuts
+        const bool yes = false, no = false;      // sem atalhos
         const bool esc   = g_cancelOnEsc && KeyPressed(VK_ESCAPE);
-        const bool back  = PadDown(g_backOffset, g_backXMask, g_backXTrig);          // Triangle / controller Y
+        const bool back  = PadDown(g_backOffset, g_backXMask, g_backXTrig);          // Triangulo / Y do controle
 
-        // mouse: cursor moves freely; hovering over an option selects it
+        // mouse: o cursor se move livremente; passar por cima de uma opcao a seleciona
         float mx, my;
         int hit = -1;
         if (GetMouseGame(mx, my))
         {
             g_mx = mx; g_my = my; g_mouseSeen = true;
-            hit = g_cursorVisible ? HitItem(L, mx, my) : -1;       // with the cursor hidden, the mouse selects nothing
+            hit = g_cursorVisible ? HitItem(L, mx, my) : -1;       // com o cursor escondido o mouse nao seleciona nada
             if (fabsf(mx - g_lastMouseX) + fabsf(my - g_lastMouseY) > 3.0f)
             {
                 g_lastMouseX = mx; g_lastMouseY = my;
@@ -1216,15 +1287,15 @@ static void PauseFrame()
             }
         }
 
-        const bool armed = (tnow - g_phaseTick) > 300;      // ignore anything that was still held when pausing
+        const bool armed = (tnow - g_phaseTick) > 300;      // ignora o que ainda estava apertado ao pausar
         if (armed)
         {
-            if ((up && !g_pUp) || (down && !g_pDown)) { g_sel = 1 - g_sel; PlayMenuSound(SND_NAVIGATE); }   // 2 options: toggle
+            if ((up && !g_pUp) || (down && !g_pDown)) { g_sel = 1 - g_sel; PlayMenuSound(SND_NAVIGATE); }   // 2 opcoes: alterna
 
             if ((esc && !g_pEsc) || (back && !g_pBack))
-                BeginClose(false, (esc && !g_pEsc) ? "Esc: No" : "Controller back (Y): No");
+                BeginClose(false, (esc && !g_pEsc) ? "Esc: No" : "Voltar do controle (Y): No");
             else if (click && !g_pClick && hit >= 0)             { g_sel = hit; BeginClose(hit == 0, hit == 0 ? "Mouse: Yes" : "Mouse: No"); }
-            else if ((enter && !g_pEnter) || (ok && !g_pOk))     BeginClose(g_sel == 0, g_sel == 0 ? "Confirm: Yes" : "Confirm: No");
+            else if ((enter && !g_pEnter) || (ok && !g_pOk))     BeginClose(g_sel == 0, g_sel == 0 ? "Confirmar: Yes" : "Confirmar: No");
         }
         g_pUp = up; g_pDown = down; g_pEnter = enter; g_pOk = ok; g_pClick = click;
         g_pYes = yes; g_pNo = no; g_pEsc = esc; g_pBack = back;
@@ -1253,8 +1324,8 @@ static void __cdecl Hook_HudDraw()
 typedef void (__thiscall *MenuProcess_t)(void*);
 static MenuProcess_t g_origMenuProcess = nullptr;
 
-// Replaces the CMenuManager::Process call. While the message is on screen, the menu does NOT receive
-// input (so nobody can select an invisible option); we only perform the maintenance the game does each frame.
+// Substitui a chamada de CMenuManager::Process. Enquanto a mensagem esta na tela, o menu NAO recebe
+// entrada (para ninguem escolher uma opcao invisivel); so fazemos a manutencao que o jogo faz por frame.
 static void __fastcall Hook_MenuProcess(void* self, void* /*edx*/)
 {
     if (g_phase == PH_ACTIVE)
@@ -1266,18 +1337,18 @@ static void __fastcall Hook_MenuProcess(void* self, void* /*edx*/)
     }
     if (g_phase == PH_CLOSING)
     {
-        *((uint8_t*)self + MENU_SHUTDOWN_OFF) = 1;                        // request menu closure
-        ((void (__thiscall*)(void*))FN_MENU_CHECK_CLOSE)(self);           // game's routine that closes and unpauses
+        *((uint8_t*)self + MENU_SHUTDOWN_OFF) = 1;                        // pede para fechar o menu
+        ((void (__thiscall*)(void*))FN_MENU_CHECK_CLOSE)(self);           // a rotina do jogo que fecha e despausa
         if (*((uint8_t*)self + MENU_ACTIVE_OFF) == 0)
         {
             g_phase = PH_NONE; g_prompting = false;
             if (g_acceptAfterClose) g_teleportPending = true;
             EndPauseCleanup();
-            Log("Menu closed; game unpaused.");
+            Log("Menu fechado; jogo despausado.");
         }
         else if (GetTickCount() - g_phaseTick > 4000)
         {
-            Log("Closing took too long; using normal menu processing.");
+            Log("Fechamento demorou; usando o processamento normal do menu.");
             g_phase = PH_NONE; g_prompting = false;
             if (g_acceptAfterClose) g_teleportPending = true;
             g_origMenuProcess(self);
@@ -1297,13 +1368,13 @@ static void __cdecl Hook_BigMessage(const char* text, uint32_t time, uint32_t st
         {
             g_failSeen = true;
             g_failTime = *(uint32_t*)ADDR_TIMER_MS;
-            Log("Mission failed message detected.");
+            Log("Mensagem de missao falhada detectada.");
         }
     }
     g_origBigMessage(text, time, style);
 }
 
-// Replaces the destination of a "call rel32" and returns the original destination
+// Troca o destino de um "call rel32" e devolve o destino original
 static uintptr_t PatchCall(uintptr_t site, void* newTarget)
 {
     uint8_t* p = (uint8_t*)site;
@@ -1317,7 +1388,7 @@ static uintptr_t PatchCall(uintptr_t site, void* newTarget)
     return orig;
 }
 
-// Finds all "call" instructions targeting 'target' in the main code area and replaces them with 'hook'
+// Procura todos os "call" para 'target' na area de codigo principal e troca por 'hook'
 static int PatchAllCalls(uintptr_t target, void* hook)
 {
     int count = 0;
@@ -1337,15 +1408,16 @@ BOOL APIENTRY DllMain(HMODULE hm, DWORD reason, LPVOID)
     if (reason != DLL_PROCESS_ATTACH) return TRUE;
     DisableThreadLibraryCalls(hm);
 
-    FILE* f = fopen("RetryMissionPause.log", "w"); if (f) fclose(f);
-
     GetModuleFileNameA(hm, g_iniPath, MAX_PATH);
     char* dot = strrchr(g_iniPath, '.');
     if (dot) strcpy(dot, ".ini");
 
+    g_logEnabled = GetPrivateProfileIntA("Retry", "EnableLog", 0, g_iniPath) != 0;
+    if (g_logEnabled) { FILE* f = fopen("RetryMissionPause.log", "w"); if (f) fclose(f); }
+
     if (*(uint32_t*)VERSION_ADDR != VERSION_OK)
     {
-        Log("Unrecognized exe version (expected 1.0 US). Mod disabled.");
+        Log("Versao do exe nao reconhecida (esperado 1.0 US). Mod desativado.");
         return TRUE;
     }
 
@@ -1353,30 +1425,30 @@ BOOL APIENTRY DllMain(HMODULE hm, DWORD reason, LPVOID)
     WIN32_FILE_ATTRIBUTE_DATA fad;
     if (GetFileAttributesExA(g_iniPath, GetFileExInfoStandard, &fad)) g_lastWrite = fad.ftLastWriteTime;
 
-    // 1) per-frame logic: immediately after CGameLogic::Update
+    // 1) logica por frame: logo depois de CGameLogic::Update
     uintptr_t o1 = PatchCall(FN_GAMELOGIC_UPDATE_CALL, (void*)&Hook_GameLogicUpdate);
-    if (o1 != FN_GAMELOGIC_UPDATE) { Log("CGameLogic::Update call point does not match. Mod disabled."); return TRUE; }
+    if (o1 != FN_GAMELOGIC_UPDATE) { Log("Ponto de chamada de CGameLogic::Update nao confere. Mod desativado."); return TRUE; }
     g_origGameLogicUpdate = (VoidFn_t)o1;
 
-    // 2) prompt drawing: after CHud::Draw
+    // 2) desenho do aviso: depois de CHud::Draw
     g_origHudDraw = (VoidFn_t)FN_HUD_DRAW;
     int nDraw = PatchAllCalls(FN_HUD_DRAW, (void*)&Hook_HudDraw);
 
-    // 3) detect "MISSION FAILED"
+    // 3) detectar "MISSION FAILED"
     g_origBigMessage = (BigMsg_t)FN_ADD_BIG_MESSAGE;
     int nMsg = PatchAllCalls(FN_ADD_BIG_MESSAGE, (void*)&Hook_BigMessage);
 
-    // 4) pause menu: input blocked while the message is on screen
+    // 4) menu de pausa: entrada bloqueada enquanto a mensagem esta na tela
     uintptr_t o4 = PatchCall(FN_MENU_PROCESS_CALL, (void*)&Hook_MenuProcess);
-    if (o4 != FN_MENU_PROCESS) { Log("CMenuManager::Process call point does not match. Mod disabled."); g_enabled = false; return TRUE; }
+    if (o4 != FN_MENU_PROCESS) { Log("Ponto de chamada de CMenuManager::Process nao confere. Mod desativado."); g_enabled = false; return TRUE; }
     g_origMenuProcess = (MenuProcess_t)o4;
 
-    // 5) control reading: prevents input pressed in the menu from leaking into gameplay
+    // 5) leitura dos controles: permite impedir que o que foi apertado no menu vaze para a gameplay
     uintptr_t o5 = PatchCall(FN_UPDATE_PADS_CALL, (void*)&Hook_UpdatePads);
     if (o5) g_origUpdatePads = (UpdatePads_t)o5;
-    else    Log("Warning: CPad::UpdatePads call point does not match; input leak protection is disabled.");
+    else    Log("Aviso: ponto de chamada de CPad::UpdatePads nao confere; a protecao contra 'vazamento' de entrada ficou desligada.");
 
-    Log("OK: hooks installed (CHud::Draw x%d, AddBigMessage x%d, pause menu, UpdatePads %s).", nDraw, nMsg, o5 ? "ok" : "no");
-    Log("Build: %s %s | game cursor + GInput-like, input and HUD protection.", __DATE__, __TIME__);
+    Log("OK: hooks instalados (CHud::Draw x%d, AddBigMessage x%d, menu de pausa, UpdatePads %s).", nDraw, nMsg, o5 ? "ok" : "nao");
+    Log("Build: %s %s | cursor do jogo + GInput-like, protecao de entrada e do HUD.", __DATE__, __TIME__);
     return TRUE;
 }
