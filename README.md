@@ -1,4 +1,4 @@
-# GTA III/Vice City/San Andreas  Quick Retry Mission Mod
+# GTA III/Vice City/San Andreas Retry Mission Mod
 
 This mod allows you to quickly restart a mission if you fail it. This mod have controller support.
 
