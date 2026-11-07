@@ -140,6 +140,7 @@ static bool  g_enabled = true;
 static char  g_message[256] = "Retry?";
 static char  g_yesText[64] = "Yes";
 static char  g_noText[64]  = "No";
+static int   g_sCodeSmall = 0x9A, g_sCodeCap = 0x8A;       // game codes for s and S with caron
 static bool  g_ownCursor = true, g_hideCursorWithPad = true, g_cancelOnEsc = true;
 static int   g_sndNavigate = 0x97, g_sndConfirm = 0x98, g_sndBack = 0x9D;
 static int   g_backOffset = 0x1E; static uint16_t g_backXMask = 0x8000; static int g_backXTrig = 0;
@@ -181,6 +182,9 @@ static void LoadConfig()
     GetPrivateProfileStringA("Retry", "Message", "Retry?", g_message, sizeof(g_message), g_iniPath);
     GetPrivateProfileStringA("Retry", "YesText", "Yes", g_yesText, sizeof(g_yesText), g_iniPath);
     GetPrivateProfileStringA("Retry", "NoText", "No", g_noText, sizeof(g_noText), g_iniPath);
+    { char b2[32];
+      GetPrivateProfileStringA("Retry", "SmallSCode", "0x9A", b2, sizeof(b2), g_iniPath);  g_sCodeSmall = (int)strtol(b2, nullptr, 0);
+      GetPrivateProfileStringA("Retry", "CapitalSCode", "0x8A", b2, sizeof(b2), g_iniPath); g_sCodeCap = (int)strtol(b2, nullptr, 0); }
     g_ownCursor = GetPrivateProfileIntA("Retry", "ShowMouseCursor", 1, g_iniPath) != 0;
     g_hideCursorWithPad = GetPrivateProfileIntA("Retry", "HideCursorWithController", 1, g_iniPath) != 0;
     g_cancelOnEsc = GetPrivateProfileIntA("Retry", "CancelOnEscape", 1, g_iniPath) != 0;
@@ -686,7 +690,8 @@ static void Tick()
 }
 
 // ======================= Prompt text =======================
-// Converts the .ini text (UTF-8 or ANSI) to the game's character codes (accented letters become the plain letter).
+// Converts the .ini text (UTF-8 or ANSI) to the game's character codes. "s" and "S" with caron (U+0161/U+0160)
+// become SmallSCode/CapitalSCode; the other accented letters become the plain letter.
 static unsigned StripAccent(unsigned cp)
 {
     static const char* from = "\xC0\xC1\xC2\xC3\xC4\xC5\xC7\xC8\xC9\xCA\xCB\xCC\xCD\xCE\xCF\xD1\xD2\xD3\xD4\xD5\xD6\xD9\xDA\xDB\xDC\xDD"
@@ -711,8 +716,16 @@ static void ToWide(const char* s, wchar_t* out, size_t n)
         unsigned cp = 0; int len = 0;
         if (c >= 0xC2 && c <= 0xDF && (s[1] & 0xC0) == 0x80)                                   { cp = ((c & 0x1F) << 6) | (s[1] & 0x3F); len = 2; }
         else if (c >= 0xE0 && c <= 0xEF && (s[1] & 0xC0) == 0x80 && (s[2] & 0xC0) == 0x80)     { cp = ((c & 0x0F) << 12) | ((s[1] & 0x3F) << 6) | (s[2] & 0x3F); len = 3; }
-        if (len) { out[o++] = (wchar_t)StripAccent(cp); s += len; }
-        else     { out[o++] = (wchar_t)StripAccent(c); ++s; }          // stray byte (file saved as ANSI)
+        if (len)
+        {
+            out[o++] = (wchar_t)((cp == 0x161) ? (unsigned)g_sCodeSmall : (cp == 0x160) ? (unsigned)g_sCodeCap : StripAccent(cp));
+            s += len;
+        }
+        else                                                   // stray byte (file saved as ANSI): 0x9A / 0x8A = s / S with caron
+        {
+            out[o++] = (wchar_t)((c == 0x9A) ? (unsigned)g_sCodeSmall : (c == 0x8A) ? (unsigned)g_sCodeCap : StripAccent(c));
+            ++s;
+        }
     }
     out[o] = 0;
 }

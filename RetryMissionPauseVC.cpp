@@ -183,6 +183,12 @@ static int   g_backOffset = 0x1E; static uint16_t g_backXMask = 0x8000; static i
 static int   g_padSource = 0;                 // 0 = Auto, 1 = XInput, 2 = Game (CPad)
 static bool  g_restoreWeapons = true, g_restoreHealth = true, g_restoreArmour = true, g_restoreMoney = true,
              g_restoreWanted = true, g_restoreTime = true, g_restoreWeather = true, g_restoreOutfit = true;
+static bool  g_dripEnable = true;       // clears the screen drips (rain etc.) after each retry teleport
+static int   g_dripRepeat = 3;          // how many clears in a row
+static int   g_dripRepeatMs = 100;      // interval between them (real time)
+static int   g_dripTypes[8] = { 0x28, 0x29 };
+static int   g_dripNTypes = 2;
+static char  g_pexName[64] = "VCParticleEx.asi";
 static float g_promptDelaySec = 3.0f;   // seconds between the mission failed message and the Retry? menu
 
 static char     g_iniPath[MAX_PATH];
@@ -268,6 +274,20 @@ static void LoadConfig()
     g_restoreWeather = GetPrivateProfileIntA("Retry", "RestoreWeather", 1, g_iniPath) != 0;
     g_restoreOutfit  = GetPrivateProfileIntA("Retry", "RestoreOutfit", 1, g_iniPath) != 0;
     g_promptDelaySec = ReadFloat("PromptDelaySeconds", 3.0f); if (g_promptDelaySec < 0.0f) g_promptDelaySec = 0.0f;
+
+    g_dripEnable   = GetPrivateProfileIntA("Retry", "ClearDrips", 1, g_iniPath) != 0;
+    g_dripRepeat   = GetPrivateProfileIntA("Retry", "Repeat", 3, g_iniPath);
+    if (g_dripRepeat < 1) g_dripRepeat = 1; if (g_dripRepeat > 10) g_dripRepeat = 10;
+    g_dripRepeatMs = GetPrivateProfileIntA("Retry", "RepeatIntervalMs", 100, g_iniPath);
+    if (g_dripRepeatMs < 0) g_dripRepeatMs = 0; if (g_dripRepeatMs > 2000) g_dripRepeatMs = 2000;
+    GetPrivateProfileStringA("Retry", "ParticleExModule", "VCParticleEx.asi", g_pexName, sizeof(g_pexName), g_iniPath);
+    GetPrivateProfileStringA("Retry", "ParticleTypes", "0x28,0x29", buf, sizeof(buf), g_iniPath);
+    g_dripNTypes = 0;
+    for (char* tok = strtok(buf, ", +"); tok && g_dripNTypes < 8; tok = strtok(nullptr, ", +"))
+    {
+        char* e = nullptr; long v = strtol(tok, &e, 0);
+        if (e != tok && v >= 0 && v <= 0x52) g_dripTypes[g_dripNTypes++] = (int)v;
+    }
 }
 
 static void CheckReload()
@@ -641,6 +661,129 @@ static void ApplyWorldState(bool firstTime)
     }
 }
 
+// ======================= Screen drips clearing (ported from ClearScreenDrips) =======================
+// Makes the raindrip screen drips (particle types 0x28/0x29) run out of time instead of blocking them: if the game
+// spawns new ones afterwards they appear normally. Works with the original particle system and with ParticleEx.
+static const uintptr_t FN_PARTICLE_REMOVE = 0x560870;      // void __cdecl (int type): removes all particles of the type (original game)
+
+static bool MemMatch(uintptr_t a, const uint8_t* e, int len)
+{
+    __try { return memcmp((void*)a, e, len) == 0; } __except (EXCEPTION_EXECUTE_HANDLER) { return false; }
+}
+
+struct PexVar { const char* ini; int mode; uint32_t tbl; uint32_t stride; uint32_t head; int count; int shift; uint32_t sigRva; };
+static const PexVar kPexVars[] = {
+    { "PS2",   1, 0x8CFA8, 0x94, 0x90, 0x53, 0, 0x937F  },
+    { "XBOX",  2, 0x8FFA8, 0x98, 0x94, 0x54, 1, 0x12D6F },
+    { "XBOX2", 3, 0x93190, 0x98, 0x94, 0x54, 1, 0x18D3F },
+};
+
+static const PexVar* PexVariant(HMODULE m, char* why, size_t whyN)
+{
+    char path[MAX_PATH], val[32];
+    GetModuleFileNameA(m, path, MAX_PATH);
+    char* d = strrchr(path, '.'); if (d) strcpy(d, ".ini");
+    GetPrivateProfileStringA("MAIN", "Particle", "PS2", val, sizeof val, path);
+    for (const PexVar& v : kPexVars)
+        if (_stricmp(val, v.ini) == 0 || (v.mode == 1 && _stricmp(val, "PC") == 0))
+        {
+            const uintptr_t b = (uintptr_t)m;
+            uint8_t sig[11] = { 0x69, 0xC0, (uint8_t)v.stride, 0, 0, 0, 0x05, 0, 0, 0, 0 };
+            const uint32_t imm = (uint32_t)(b + v.tbl); memcpy(sig + 7, &imm, 4);
+            if (!MemMatch(b + v.sigRva, sig, sizeof sig)) { snprintf(why, whyN, "ParticleEx differs from the analysed one (variant %s)", val); return nullptr; }
+            return &v;
+        }
+    snprintf(why, whyN, "unknown Particle=%s value in VCParticleEx.ini", val);
+    return nullptr;
+}
+
+static int ClearPex(HMODULE m, const PexVar* v)
+{
+    int n = 0;
+    const uint32_t now = *(volatile uint32_t*)ADDR_TIMER_MS;
+    const uint8_t* tbl = (const uint8_t*)((uintptr_t)m + v->tbl);
+    for (int i = 0; i < g_dripNTypes; ++i)
+    {
+        const int idx = g_dripTypes[i] + v->shift;
+        if (idx < 0 || idx >= v->count) continue;
+        const uint8_t* e = tbl + (size_t)idx * v->stride;
+        if (*(const int*)e != idx) continue;
+        int guard = 0;
+        for (uint8_t* q = *(uint8_t* const*)(e + v->head); q && guard < 8192; q = *(uint8_t**)(q + 0x54), ++guard)
+        { *(uint32_t*)(q + 0x18) = now - 1; ++n; }               // destroy time already passed: the system removes it by itself
+    }
+    return n;
+}
+
+static int g_dripLeft = 0;
+static DWORD g_dripNext = 0;
+static int g_dripRun = 0;
+
+static void DripClearOnce()
+{
+    int n = 0, mode = 0;
+    __try
+    {
+        HMODULE m = GetModuleHandleA(g_pexName);
+        if (m)
+        {
+            char why[96];
+            const PexVar* v = PexVariant(m, why, sizeof why);
+            if (v) { mode = v->mode; n = ClearPex(m, v); }
+            else { mode = -1; Log("ParticleEx: %s; nothing changed.", why); }
+        }
+        else
+            for (int i = 0; i < g_dripNTypes; ++i) { ((void (__cdecl*)(int))FN_PARTICLE_REMOVE)(g_dripTypes[i]); ++n; }
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER) { mode = -1; n = 0; }
+    Log("Drips: clear %d (mode %d: %s) -> %d affected.", ++g_dripRun, mode, mode == 0 ? "original game" : (mode > 0 ? "ParticleEx" : "error"), n);
+}
+
+
+// Diagnosis (only with EnableLog=1): once per second logs the state that decides whether the game's own screen drips can spawn/draw.
+static void DripDiag()
+{
+    if (!g_logEnabled) return;
+    static DWORD next = 0;
+    const DWORD t = GetTickCount();
+    if ((int32_t)(t - next) < 0) return;
+    next = t + 1000;
+    __try
+    {
+        const bool pex = GetModuleHandleA(g_pexName) != nullptr;
+        Log("DripDiag: pex=%d gameState=%d lock=%d dropCount=%d timer=%u",
+            pex, *(int32_t*)0x978810, *(int32_t*)0x9B5F94, *(int32_t*)0x9753BC, *(uint32_t*)ADDR_TIMER_MS);
+        static const int types[] = { 0x28, 0x29, 0x2E, 0x2F, 0x50 };
+        for (int ty : types)
+        {
+            const uint8_t* e = (const uint8_t*)(0x975428 + (uintptr_t)ty * 0x94);
+            int n = 0; for (const uint8_t* q = *(const uint8_t* const*)(e + 0x90); q && n < 4096; q = *(const uint8_t* const*)(q + 0x54)) ++n;
+            const uint32_t texVar = *(const uint32_t*)(e + 0x8C);
+            Log("  type 0x%02X: entryType=%d active=%d texVar=%08X", ty, *(const int*)e, n, texVar);
+        }
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER) { Log("DripDiag: read error"); }
+}
+
+// asks for the clears (Repeat times) right after a retry teleport
+static void DripStart()
+{
+    if (!g_dripEnable) return;
+    g_dripLeft = g_dripRepeat; g_dripNext = GetTickCount(); g_dripRun = 0;
+}
+
+// called once per frame on the game thread
+static void DripTick()
+{
+    DripDiag();
+    if (g_dripLeft <= 0) return;
+    if (!g_dripEnable) { g_dripLeft = 0; return; }
+    if ((int32_t)(GetTickCount() - g_dripNext) < 0) return;
+    DripClearOnce();
+    --g_dripLeft;
+    g_dripNext = GetTickCount() + (DWORD)g_dripRepeatMs;
+}
+
 // ======================= Phases of the prompt pause =======================
 enum Phase { PH_NONE = 0, PH_REQUEST, PH_ACTIVE, PH_WAITRELEASE, PH_CLOSING };
 static Phase    g_phase = PH_NONE;
@@ -713,6 +856,7 @@ static void DoTeleport(uint8_t* ped)
     ApplyPlayerState(ped, true);
     ApplyWorldState(true);
     g_reapply = true; g_reapplyUntil = GetTickCount() + 2500;
+    DripStart();
     Log("Teleportado para %.1f %.1f %.1f e estado restaurado.", S.pos[0], S.pos[1], S.pos[2]);
     LogSnapshot("Estado salvo no marcador", S);
 }
@@ -722,6 +866,7 @@ static void Tick()
 {
     CheckReload();
     if (!g_enabled) return;
+    DripTick();
     TrackInputDevice(false);
 
     uint8_t* ped = PlayerPed();
