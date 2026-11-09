@@ -18,6 +18,29 @@ are all restored to the state they were in when you started the mission, you are
 
 You can customize the text on the "Retry" screen, which makes it possible to translate the text into another language, and you can also adjust the time it takes for the restart screen to appear.
 
+# Installation
+
+**III**:
+
+1. Install the Ultimate Asi Loader in in the game's root folder
+2. Extract the file "III.Retry.Mission.Mod.v1.0.zip"
+3. Copy the "Retry Mission Mod" folder into the "modloader" folder, which is located in your game's root directory.
+4. Done
+
+**VC**: 
+
+1. Install the Ultimate Asi Loader in in the game's root folder
+2. Extract the file "VC.Retry.Mission.Mod.v1.0.zip"
+3. Copy the "Retry Mission Mod" folder into the "modloader" folder, which is located in your game's root directory.
+4. Done
+
+**SA**: 
+
+1. Install the Silent's Asi Loader and Modloader in in the game's root folder
+2. Extract the file "SA.Retry.Mission.Mod.v1.0.zip"
+3. Copy the "Retry Mission Mod" folder into the "modloader" folder, which is located in your game's root directory.
+4. Done
+
 # AI disclosure
 The code of this mod was written by Claude Sonnet 5.5 and tested in-game by me.
 
