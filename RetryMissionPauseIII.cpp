@@ -2,6 +2,8 @@
 //
 // GTA III version of RetryMissionPause (Vice City). When the player steps on the marker and the mission starts, it stores
 // the position, weapons (with the exact ammo), health, armour, money, wanted level and time/weather.
+// (Arrest fix: the prompt now waits for the whole BUSTED sequence to end - fade, teleport to the police station - and if the
+// game opens its normal pause menu while the prompt is still owed, that menu becomes the Retry? prompt.)
 // If the mission fails (by dying, being arrested or by its objectives), after respawning the game PAUSES (the game's own
 // pause screen) and shows, in place of the pause menu options:
 //
@@ -571,6 +573,20 @@ static DWORD    g_failTime = 0, g_missionEndTime = 0, g_lastBusy = 0;
 static bool     g_reapply = false;
 static DWORD    g_reapplyUntil = 0;
 static uint8_t  g_savedShowMouse = 0;
+static bool     g_awaiting = false;        // failure confirmed and the Retry? prompt not answered yet (also covers BUSTED)
+static DWORD    g_awaitTick = 0;
+static bool     g_interlude = false;       // a mission (e.g. the tutorial after the first arrest) started while a Retry? was owed
+static int      g_attempts = 0;            // how many times the pause request had to be repeated
+static bool     g_wbPending = false;       // "WASTED"/"BUSTED" message seen and the respawn not seen yet
+static DWORD    g_wbTime = 0;
+static bool     g_havePos = false;
+static float    g_lastPos[3] = { 0, 0, 0 };
+
+static void SetPending()
+{
+    g_pending = true; g_awaiting = true;
+    g_awaitTick = *(uint32_t*)ADDR_TIMER_MS;
+}
 
 static void StartPrompt()
 {
@@ -642,30 +658,80 @@ static void Tick()
     if (!ped) return;
     const DWORD now = *(uint32_t*)ADDR_TIMER_MS;
     const bool onMission = IsOnMission();
+    if (g_logEnabled)
+    {
+        const uint32_t off = *(uint32_t*)ADDR_MISSION_OFF;
+        const int32_t raw = off ? *(int32_t*)(ADDR_SCRIPT_SPACE + off) : -1;
+        static int32_t s_lastRaw = -2;
+        if (raw != s_lastRaw) { Log("Flag de missao mudou: %d -> %d.", (int)s_lastRaw, (int)raw); s_lastRaw = raw; }
+    }
     const bool alive = *(float*)(ped + PED_HEALTH_OFF) > 0.5f;
+    const bool fading0 = ((int (__thiscall*)(void*))FN_FADE_STATUS)((void*)OBJ_CAMERA) != 0;
 
     if (!onMission && alive) TakeSnapshot(ped, g_rolling);      // state from before stepping on the marker
 
     if (onMission && !g_prevOnMission)
     {
-        if (g_rolling.valid) g_snap = g_rolling; else TakeSnapshot(ped, g_snap);
-        g_haveSaved = true; g_pending = false; g_failSeen = false; g_reapply = false;
-        Log("Missao iniciada. Marcador salvo: %.1f %.1f %.1f.", g_snap.pos[0], g_snap.pos[1], g_snap.pos[2]);
-        LogSnapshot("Estado salvo", g_snap);
+        if (g_awaiting && g_haveSaved && g_phase == PH_NONE && now - g_awaitTick < 30000)
+        {
+            // A mission started right after a failure, before the Retry? appeared (e.g. the tutorial shown after the first
+            // arrest). Keep the marker/state of the FAILED mission and show the Retry? when this one ends.
+            g_interlude = true; g_pending = false; g_failSeen = false; g_reapply = false;
+            Log("Missao iniciada com Retry? pendente (ex.: tutorial apos ser preso): mantendo o estado da missao falhada.");
+        }
+        else
+        {
+            if (g_rolling.valid) g_snap = g_rolling; else TakeSnapshot(ped, g_snap);
+            g_haveSaved = true; g_pending = false; g_failSeen = false; g_reapply = false; g_awaiting = false; g_attempts = 0;
+            g_interlude = false;
+            Log("Missao iniciada. Marcador salvo: %.1f %.1f %.1f.", g_snap.pos[0], g_snap.pos[1], g_snap.pos[2]);
+            LogSnapshot("Estado salvo", g_snap);
+        }
     }
     if (!onMission && g_prevOnMission)
     {
         g_missionEndTime = now;
-        if (g_failSeen && now - g_failTime < 15000 && g_haveSaved) { g_pending = true; Log("Missao terminou com falha."); }
+        if (g_interlude)
+        {
+            g_interlude = false;
+            g_failSeen = true; g_failTime = now;               // the prompt delay counts from the end of this mission
+            SetPending();
+            Log("Missao intermediaria (tutorial) terminou: o Retry? da missao falhada sera exibido.");
+        }
+        else if (g_failSeen && now - g_failTime < 15000 && g_haveSaved) { SetPending(); Log("Missao terminou com falha."); }
+        else if (!g_failSeen && g_haveSaved && (g_wbPending || !alive))
+        {
+            // the mission (e.g. the police station tutorial) ended through death/arrest without the "MISSION FAILED" message
+            g_failSeen = true; g_failTime = now;               // the prompt delay counts from the end of the mission
+            SetPending();
+            Log("Missao terminou sem a mensagem de falha, mas com morte/prisao: tratada como falha.");
+        }
         else Log("Missao terminou sem falha (ou sem marcador salvo).");
     }
     g_prevOnMission = onMission;
 
     if (!onMission && g_failSeen && g_haveSaved && !g_pending && g_phase == PH_NONE &&
         now - g_failTime < 15000 && now - g_missionEndTime < 15000)
-        g_pending = true;                                       // the failure message arrived after the end of the mission
+        SetPending();                                           // the failure message arrived after the end of the mission
 
-    if (onMission || !alive) g_lastBusy = now;
+    // Being ARRESTED does not zero the health, so "alive" alone does not tell when the BUSTED sequence is over (arrest animation,
+    // fade out, teleport to the police station, fade in). Also count as "busy": a screen fade, a position jump (respawn) and the
+    // time between the WASTED/BUSTED message and the respawn. Otherwise the prompt tried to pause in the middle of the arrest.
+    {
+        const float* pp = (const float*)(ped + PED_POS_OFF);
+        if (g_havePos)
+        {
+            const float dx = pp[0] - g_lastPos[0], dy = pp[1] - g_lastPos[1], dz = pp[2] - g_lastPos[2];
+            if (dx * dx + dy * dy + dz * dz > 400.0f)               // moved more than 20 units in one frame: respawn / teleport
+            {
+                g_lastBusy = now; g_wbPending = false;
+                Log("Salto de posicao detectado (respawn); aguardando estabilizar.");
+            }
+        }
+        g_lastPos[0] = pp[0]; g_lastPos[1] = pp[1]; g_lastPos[2] = pp[2]; g_havePos = true;
+    }
+    if (g_wbPending && now - g_wbTime > 20000) g_wbPending = false;
+    if (onMission || !alive || fading0 || g_wbPending) g_lastBusy = now;
 
     if (g_pending && g_phase == PH_NONE && !onMission && now - g_lastBusy >= 1500 && now - g_failTime >= (DWORD)(g_promptDelaySec * 1000.0f))
     {
@@ -674,7 +740,15 @@ static void Tick()
     }
     if (g_phase == PH_REQUEST && (onMission || !alive))
     {
-        g_phase = PH_NONE; Log("Aviso cancelado antes de pausar.");
+        g_phase = PH_NONE;
+        if (!MenuIsActive()) *(uint8_t*)ADDR_REQ_OPEN = 0;            // otherwise the game opens the NORMAL pause menu later
+        if (!onMission) g_pending = true; else g_awaiting = false;    // not on a mission: try again when things calm down
+        Log("Aviso cancelado antes de pausar (pedido de pausa removido).");
+    }
+    if (g_awaiting && !g_interlude && !onMission && g_phase == PH_NONE && now - g_awaitTick > 60000)
+    {
+        g_awaiting = false; g_pending = false;
+        Log("Aviso de Retry? expirou sem ser exibido.");
     }
 
     if (g_teleportPending && !MenuIsActive())
@@ -927,7 +1001,7 @@ static void EnterActive(uint8_t* m, DWORD tnow)
 static void EndPrompt(uint8_t* m, const char* why)
 {
     m[MENU_SHOW_MOUSE] = g_savedShowMouse;
-    g_phase = PH_NONE;
+    g_phase = PH_NONE; g_awaiting = false; g_attempts = 0;
     if (g_acceptAfterClose) g_teleportPending = true;
     g_acceptAfterClose = g_acceptAfterClose && false;
     Log("%s", why);
@@ -936,7 +1010,24 @@ static void EndPrompt(uint8_t* m, const char* why)
 // CMenuManager::Process (called every frame, with the menu open or not)
 static void ProcessImpl(void* self, void (__thiscall *orig)(void*))
 {
-    if (g_phase == PH_NONE) { orig(self); return; }
+    if (g_phase == PH_NONE)
+    {
+        orig(self);
+        // Safety net: if the game opened its pause menu while a Retry? prompt is still owed (e.g. it was opened during the
+        // arrest sequence, or by the player), that menu becomes the Retry? prompt instead of the normal pause menu.
+        if (g_enabled && g_awaiting && !g_interlude && MenuIsActive())
+        {
+            uint8_t* mm = (uint8_t*)self;
+            const int32_t page = *(int32_t*)(mm + MENU_PAGE);
+            if (page == 0 || page == (int32_t)MENU_PAUSE_PAGE)
+            {
+                g_pending = false; g_failSeen = false;
+                EnterActive(mm, GetTickCount());
+                Log("Menu de pausa normal aberto com aviso pendente: assumido como Retry?.");
+            }
+        }
+        return;
+    }
     uint8_t* m = (uint8_t*)self;
     const DWORD tnow = GetTickCount();
 
@@ -949,7 +1040,17 @@ static void ProcessImpl(void* self, void (__thiscall *orig)(void*))
             g_forcedActivate = true; *(uint8_t*)ADDR_REQ_OPEN = 1;
             Log("Pedido de pausa repetido.");
         }
-        else if (tnow - g_phaseTick > 5000) { g_phase = PH_NONE; Log("Nao foi possivel pausar o jogo; aviso cancelado."); }
+        else if (tnow - g_phaseTick > 5000)
+        {
+            g_phase = PH_NONE;
+            *(uint8_t*)ADDR_REQ_OPEN = 0;                     // otherwise the game would open the NORMAL pause menu later
+            if (++g_attempts < 3)
+            {
+                g_pending = true; g_lastBusy = *(uint32_t*)ADDR_TIMER_MS;
+                Log("Nao foi possivel pausar o jogo; tentando de novo mais tarde (%d).", g_attempts);
+            }
+            else { g_awaiting = false; Log("Nao foi possivel pausar o jogo; aviso cancelado."); }
+        }
         return;
     }
 
@@ -981,6 +1082,13 @@ template<int N> static void __fastcall Hook_MenuProcessN(void* self, void*)
 
 template<int N> static void __cdecl Hook_BigMessageN(const wchar_t* text, uint32_t time, uint32_t style)
 {
+    if (text && g_logEnabled)
+    {
+        char b[128]; size_t i = 0;
+        for (; text[i] && i < 127; ++i) b[i] = (text[i] < 128) ? (char)text[i] : '?';
+        b[i] = 0;
+        Log("BigMessage: \"%s\" (tempo %u, estilo %u)", b, (unsigned)time, (unsigned)style);
+    }
     if (text && g_enabled)
     {
         const wchar_t* fail = ((const wchar_t* (__thiscall*)(void*, const char*))FN_TEXT_GET)((void*)ADDR_THETEXT, "M_FAIL");
@@ -989,6 +1097,17 @@ template<int N> static void __cdecl Hook_BigMessageN(const wchar_t* text, uint32
             g_failSeen = true;
             g_failTime = *(uint32_t*)ADDR_TIMER_MS;
             Log("Mensagem de missao falhada detectada.");
+        }
+        else
+        {
+            const wchar_t* bust = ((const wchar_t* (__thiscall*)(void*, const char*))FN_TEXT_GET)((void*)ADDR_THETEXT, "BUSTED");
+            bool wb = bust && wcscmp(text, bust) == 0;
+            if (!wb)
+            {
+                const wchar_t* dead = ((const wchar_t* (__thiscall*)(void*, const char*))FN_TEXT_GET)((void*)ADDR_THETEXT, "DEAD");
+                wb = dead && wcscmp(text, dead) == 0;
+            }
+            if (wb) { g_wbPending = true; g_wbTime = *(uint32_t*)ADDR_TIMER_MS; Log("Mensagem WASTED/BUSTED detectada."); }
         }
     }
     g_origBigMessage[N](text, time, style);
